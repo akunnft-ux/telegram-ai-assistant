@@ -663,3 +663,158 @@ bot.py: simpan jawaban bersih ke DB → kirim ke user
 - Default bahasa Indonesia
 - Pembahasan **pelan-pelan** dan praktis
 - Jangan langsung lempar full code besar
+
+==========================================
+
+# Summary Lengkap Proyek Telegram AI Assistant
+
+---
+
+## Tujuan Proyek
+Membangun **AI assistant personal di Telegram** berbasis **Gemini API**, dengan fokus:
+- Hemat quota
+- Bisa menyimpan percakapan
+- Punya memory bertahap
+- Makin lama makin kontekstual / "pintar"
+- Self-learning
+
+---
+
+## Stack
+- **Python**, **python-telegram-bot**, **google-genai**, **python-dotenv**, **SQLite**, **httpx**
+- Config: `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`
+- Model: `gemini-3.1-flash-lite-preview`
+- Constraint: RPM 15, TPM 250K, RPD 500, target **1 API call per pesan**
+
+---
+
+## Struktur Proyek
+```bash
+telegram-ai-assistant/
+├── .env
+├── requirements.txt
+├── app/
+│   ├── bot.py
+│   ├── config.py
+│   ├── gemini.py
+│   ├── database.py
+│   ├── memory.py
+│   └── tools.py
+└── venv/
+```
+
+---
+
+## Deployment
+- Kode di **GitHub**, auto-deploy ke **Railway**
+- Database persisten di Railway Volume `/data/assistant.db`
+- Biaya Railway: free tier 26 hari, setelah itu $5/bulan
+- **Alternatif lebih murah:** Fly.io (free/sangat murah), Oracle Cloud (gratis selamanya), VPS lokal (~Rp 20rb/bulan)
+
+---
+
+## Database — SQLite
+
+### Tabel `conversations`
+```sql
+CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Tabel `memories`
+```sql
+CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, key)
+);
+```
+
+---
+
+## Commands
+| Command | Fungsi |
+|---------|--------|
+| `/start` | Salam pembuka |
+| `/memory` | Lihat semua memory |
+| `/forget [key]` | Hapus 1 memory |
+| `/clearmemory` | Hapus semua memory |
+
+---
+
+## Arsitektur Memory
+- Gemini ekstrak info dari pesan → `[MEMORY]` block → parse lokal → simpan SQLite
+- Memory di-inject ke system prompt setiap pesan
+- Kalau >10 memories → diringkas jadi paragraf (hemat token)
+- Kategori semi-bebas, Gemini boleh buat key baru (snake_case)
+
+---
+
+## Tool Calling — DefiLlama
+
+### Prinsip
+- Pakai tool → **2 API call** (call 1: Gemini putuskan tool, call 2: rangkum hasil)
+- Tidak pakai tool → tetap **1 API call**
+
+### Tool: `get_tvl_growth`
+- Input: nama protokol
+- Proses: fetch TVL 30 hari dari DefiLlama public API (gratis, tidak perlu key)
+- Output: TVL sekarang, TVL 30 hari lalu, persentase growth
+- Endpoint: `https://api.llama.fi/protocol/{name}`
+
+### File Baru: `app/tools.py`
+- `get_tvl_growth(protocol_name)` — async, fetch DefiLlama
+- `format_tvl_result(result)` — format output ke teks rapi
+
+### Perubahan `gemini.py`
+- Tambah import `types` dari `google.genai`
+- Tambah import dari `tools.py`
+- Tambah `TVL_TOOL` — definisi tool untuk Gemini
+- `get_response()` — handle tool calling + 2 API call kalau tool dipanggil
+- `BASE_SYSTEM_PROMPT` — tambah info bot punya akses DefiLlama
+
+---
+
+## Status Proyek
+
+### Sudah Jadi ✅
+- Telegram bot aktif dan polling
+- Gemini API terhubung
+- Chat tersimpan di SQLite
+- Recent history 20 pesan
+- Database persisten via Railway Volume
+- Memory system hybrid (Gemini + lokal parsing)
+- Semi-bebas kategori (self-learning)
+- Memory injection ke system prompt
+- Memory summary untuk hemat token
+- `[MEMORY]` block tersembunyi dari user
+- Command `/memory`, `/forget`, `/clearmemory`
+- Error handling informatif
+- Tool calling DefiLlama (`get_tvl_growth`) ✅ deployed & sukses
+
+### Belum Jadi ❌
+- `/clearhistory` — hapus chat history
+- Semantic search / vector retrieval
+- Fallback multi-model
+- Rate limiting per user
+- Image / voice message handling
+- Scheduled memory cleanup
+- Tool calling lain selain TVL growth
+
+---
+
+## Prinsip Arsitektur
+- **1 API call per pesan** (kecuali tool calling, max 2)
+- Gunakan local logic / SQLite sebanyak mungkin
+- Default bahasa Indonesia
+- Jangan buru-buru tambah fitur yang boros API
+- Pembahasan pelan-pelan dan praktis

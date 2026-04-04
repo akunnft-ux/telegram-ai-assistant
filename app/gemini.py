@@ -70,10 +70,12 @@ def build_contents_from_history(recent_messages):
     contents = []
     for role, message in recent_messages:
         gemini_role = "user" if role == "user" else "model"
-        contents.append({
-            "role": gemini_role,
-            "parts": [{"text": message}]
-        })
+        contents.append(
+            types.Content(
+                role=gemini_role,
+                parts=[types.Part(text=message)]
+            )
+        )
     return contents
 
 
@@ -90,16 +92,25 @@ async def get_response(user_id, user_message, recent_messages):
                 system_instruction=system_prompt,
                 temperature=0.7,
                 max_output_tokens=1500,
-                tools=[TVL_TOOL]
+                tools=[TVL_TOOL],
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=0
+                )
             )
         )
 
         # Cek apakah Gemini mau panggil tool
         candidate = response.candidates[0]
-        part = candidate.content.parts[0]
 
-        if hasattr(part, "function_call") and part.function_call:
-            function_call = part.function_call
+        # Cari function_call di semua parts
+        function_call_part = None
+        for part in candidate.content.parts:
+            if hasattr(part, "function_call") and part.function_call:
+                function_call_part = part
+                break
+
+        if function_call_part:
+            function_call = function_call_part.function_call
             protocol_name = function_call.args.get("protocol_name", "")
 
             print(f"🔧 Tool dipanggil: get_tvl_growth({protocol_name})")
@@ -108,16 +119,25 @@ async def get_response(user_id, user_message, recent_messages):
             tool_result = await get_tvl_growth(protocol_name)
             formatted_result = format_tvl_result(tool_result)
 
-            # Call 2: Gemini rangkum hasil tool
-            contents.append({
-                "role": "model",
-                "parts": [{"function_call": {"name": "get_tvl_growth", "args": {"protocol_name": protocol_name}}}]
-            })
-            contents.append({
-                "role": "user",
-                "parts": [{"function_response": {"name": "get_tvl_growth", "response": {"result": formatted_result}}}]
-            })
+            # ✅ Pakai content ASLI dari Gemini (sudah ada thought_signature)
+            contents.append(candidate.content)
 
+            # ✅ Pakai types.Content & types.Part yang proper
+            contents.append(
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(
+                            function_response=types.FunctionResponse(
+                                name="get_tvl_growth",
+                                response={"result": formatted_result}
+                            )
+                        )
+                    ]
+                )
+            )
+
+            # Call 2: Gemini rangkum hasil tool
             response2 = client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=contents,
@@ -125,6 +145,10 @@ async def get_response(user_id, user_message, recent_messages):
                     system_instruction=system_prompt,
                     temperature=0.7,
                     max_output_tokens=1500,
+                    tools=[TVL_TOOL],
+                    thinking_config=types.ThinkingConfig(
+                        thinking_budget=0
+                    )
                 )
             )
 
