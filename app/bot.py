@@ -3,7 +3,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 
 from app.config import TELEGRAM_BOT_TOKEN
 from app.gemini import get_response
-from app.database import init_db, save_message, get_recent_messages, get_all_memories, delete_memory
+from app.database import init_db, save_message, get_recent_messages, get_all_memories, delete_memory, delete_all_memories
 from app.memory import extract_memory_from_response
 
 
@@ -67,6 +67,15 @@ async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"Aku tidak punya catatan '{key}'.")
 
+async def clearmemory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    deleted = delete_all_memories(user_id)
+
+    if deleted > 0:
+        await update.message.reply_text(f"Oke, semua memory ({deleted} catatan) sudah aku hapus.")
+    else:
+        await update.message.reply_text("Tidak ada memory yang perlu dihapus.")
+
 
 def main():
     init_db()
@@ -83,6 +92,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("memory", memory_command))
     app.add_handler(CommandHandler("forget", forget_command))
+    app.add_handler(CommandHandler("clearmemory", clearmemory_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("🤖 Bot is running...")
