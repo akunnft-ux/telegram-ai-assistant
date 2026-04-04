@@ -37,6 +37,7 @@ def init_db():
 
     conn.commit()
     conn.close()
+    print("✅ DB initialized, tabel memories siap")
 
 
 def save_message(user_id, role, message):
