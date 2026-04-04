@@ -1,11 +1,11 @@
-## Summary diskusi kita
+# Summary diskusi kita
 
 ### Tujuan proyek
 Membangun **AI assistant personal di Telegram** berbasis **Gemini API**, dengan fokus:
 - hemat quota
 - bisa menyimpan percakapan
 - punya memory bertahap
-- makin lama makin kontekstual / “pintar”
+- makin lama makin kontekstual / "pintar"
 
 ---
 
@@ -49,44 +49,83 @@ Pakai `.env` untuk:
 
 # 3. Struktur proyek yang sekarang
 
-Kurang lebih sekarang strukturnya seperti ini:
-
 ```bash
 telegram-ai-assistant/
 ├── .env
-├── assistant.db
 ├── app/
 │   ├── bot.py
 │   ├── config.py
 │   ├── gemini.py
-│   └── database.py
+│   ├── database.py
+│   └── memory.py
 └── venv/
 ```
 
 Catatan:
-- `assistant.db` muncul di root project
-- `database.py` sekarang harus berada di dalam folder `app/` agar konsisten dengan import package
+- `assistant.db` sekarang disimpan di `/data/assistant.db` (Railway persistent volume)
+- tidak lagi di root project
 
 ---
 
-# 4. Perubahan penting yang sudah dilakukan
+# 4. Deployment
 
-## 4.1 SQLite berhasil ditambahkan
+## Platform
+- Kode disimpan di **GitHub**
+- Deploy otomatis ke **Railway** setiap push ke GitHub
+
+## Alur update
+```
+edit kode di lokal → push ke GitHub → Railway otomatis redeploy
+```
+
+## Railway usage
+- Biaya sangat murah, estimasi **$0.01 / bulan**
+- $5 credit one-time cukup untuk berbulan-bulan
+
+---
+
+# 5. Persistent storage — Railway Volume
+
+## Masalah sebelumnya
+File `assistant.db` hilang setiap kali Railway redeploy karena container di-build ulang dari nol.
+
+## Solusi
+Pakai **Railway Volume** — storage persisten yang tidak ikut hilang saat redeploy.
+
+## Cara setup yang sudah dilakukan
+1. Buka service bot di Railway dashboard
+2. Masuk ke tab **Settings**
+3. Scroll ke bagian **Volumes**
+4. Set mount path ke `/data`
+5. Klik **Attach volume to service**
+6. Deploy
+
+## Perubahan kode
+Di `app/database.py`, ubah:
+```python
+DB_NAME = "assistant.db"
+```
+menjadi:
+```python
+DB_NAME = "/data/assistant.db"
+```
+
+## Status
+- ✅ Volume terpasang dan aktif
+- ✅ Muncul di Railway usage
+- ✅ Database tidak hilang saat redeploy
+
+---
+
+# 6. Perubahan penting yang sudah dilakukan
+
+## 6.1 SQLite berhasil ditambahkan
 Tujuan:
 - menyimpan riwayat chat permanen
 - agar data tidak hilang saat restart
 
 ### Tabel yang sudah dibuat
 #### `conversations`
-Kolom:
-- `id`
-- `user_id`
-- `role`
-- `message`
-- `created_at`
-
-SQL dasarnya:
-
 ```sql
 CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,56 +136,145 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 ```
 
----
-
-## 4.2 File `app/database.py`
-Fungsi yang sudah dipakai:
-
-### `DB_NAME`
-```python
-DB_NAME = "assistant.db"
+#### `memories`
+```sql
+CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, key)
+);
 ```
 
-### `get_connection()`
-Untuk buka koneksi SQLite
+---
 
-### `init_db()`
-Untuk membuat tabel `conversations`
+## 6.2 File `app/database.py`
 
-### `save_message(user_id, role, message)`
-Untuk menyimpan chat user dan assistant
+Isi lengkap file sekarang:
 
-### `get_recent_messages(user_id, limit=10)`
-Untuk mengambil beberapa pesan terakhir dari DB
+```python
+import sqlite3
+
+DB_NAME = "/data/assistant.db"
+
+
+def get_connection():
+    conn = sqlite3.connect(DB_NAME)
+    return conn
+
+
+def init_db():
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS conversations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        message TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, key)
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+    print("✅ DB initialized, tabel memories siap")
+
+
+def save_message(user_id, role, message):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    INSERT INTO conversations (user_id, role, message)
+    VALUES (?, ?, ?)
+    """, (str(user_id), role, message))
+
+    conn.commit()
+    conn.close()
+
+
+def get_recent_messages(user_id, limit=10):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT role, message
+    FROM conversations
+    WHERE user_id = ?
+    ORDER BY id DESC
+    LIMIT ?
+    """, (str(user_id), limit))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    rows.reverse()
+    return rows
+
+
+def upsert_memory(user_id, key, value):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    INSERT INTO memories (user_id, key, value)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id, key)
+    DO UPDATE SET value = excluded.value,
+                  updated_at = CURRENT_TIMESTAMP
+    """, (str(user_id), key, value))
+
+    conn.commit()
+    conn.close()
+
+
+def get_all_memories(user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT key, value
+    FROM memories
+    WHERE user_id = ?
+    ORDER BY updated_at DESC
+    """, (str(user_id),))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return rows
+```
 
 ---
 
-# 5. Integrasi ke bot Telegram
+# 7. Integrasi ke bot Telegram
 
-## 5.1 Import di `app/bot.py`
-Saat ini bot mengimpor:
-
+## 7.1 Import di `app/bot.py`
 ```python
 from app.config import TELEGRAM_BOT_TOKEN
 from app.gemini import get_response
 from app.database import init_db, save_message, get_recent_messages
 ```
 
----
-
-## 5.2 Handler yang sekarang
-Fungsi `handle_message()` sekarang konsepnya:
-
-1. ambil `user_id`
-2. ambil `user_message`
-3. simpan pesan user ke DB
-4. ambil `recent_messages` dari DB
-5. panggil Gemini dengan history itu
-6. simpan jawaban assistant ke DB
-7. kirim jawaban ke Telegram
-
-Contoh alur:
-
+## 7.2 Handler `handle_message()`
 ```python
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -165,12 +293,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response)
 ```
 
----
-
-## 5.3 `main()` di `app/bot.py`
-`init_db()` sudah dipanggil sebelum bot start.
-
-Builder Telegram saat ini memakai timeout yang lebih besar:
+## 7.3 `main()` di `app/bot.py`
+- `init_db()` dipanggil sebelum bot start
+- Builder pakai timeout lebih besar:
 
 ```python
 Application.builder() \
@@ -181,69 +306,34 @@ Application.builder() \
     .build()
 ```
 
-Ini ditambahkan karena sebelumnya sempat ada masalah timeout polling Telegram.
-
 ---
 
-# 6. Evolusi memory
+# 8. Evolusi memory
 
 ## Tahap awal
-Awalnya memory memakai **RAM** di `app/gemini.py`:
-- ada `chat_histories = {}`
-- ada `MAX_HISTORY = 10`
-- history disimpan per user di memori Python
-
-Kelemahannya:
-- kalau bot restart, context hilang
-
----
-
-## Tahap sekarang
-Memory short-term sekarang sudah dipindahkan ke **SQLite-backed recent history**:
-- pesan user disimpan ke DB
-- jawaban assistant disimpan ke DB
-- saat ada pesan baru, bot ambil `recent_messages` dari SQLite
-- history itu dikirim ke Gemini
-
-Jadi:
-- restart bot tidak lagi menghapus konteks sepenuhnya
-- source of truth sekarang adalah database
-
----
-
-# 7. `app/gemini.py` yang sekarang
-
-## Perubahan utama
-### Dihapus
+Memory pakai RAM di `app/gemini.py`:
 - `chat_histories = {}`
 - `MAX_HISTORY = 10`
+- hilang saat restart
 
-### Diganti dengan pendekatan:
-- `build_contents_from_history(recent_messages)`
-- `get_response(user_id, user_message, recent_messages)`
+## Tahap kedua
+Memory dipindah ke SQLite-backed recent history:
+- pesan disimpan ke DB
+- diambil saat ada pesan baru
+- restart tidak menghapus konteks
+
+## Tahap ketiga (sekarang)
+Tabel `memories` sudah dibuat untuk long-term memory.
+File `app/memory.py` sudah dibuat untuk rule-based extraction.
 
 ---
 
-## Variabel/config penting yang dipakai di `gemini.py`
+# 9. `app/gemini.py`
 
-### `client`
+## Variabel penting
 ```python
 client = genai.Client(api_key=GEMINI_API_KEY)
-```
 
-### `SYSTEM_PROMPT`
-Sudah beberapa kali diarahkan agar:
-- Bahasa Indonesia default
-- natural
-- tidak kaku
-- ringkas
-- cocok untuk Telegram
-- hindari markdown berlebihan
-- jujur kalau user meminta data real-time / lokasi aktual
-
-Arah prompt yang disepakati:
-
-```python
 SYSTEM_PROMPT = """Kamu adalah asisten AI personal yang helpful dan ramah.
 Jawab selalu dalam Bahasa Indonesia kecuali diminta bahasa lain.
 Jawab dengan natural seperti teman ngobrol, tidak kaku.
@@ -254,183 +344,20 @@ Hindari markdown seperti **bold**, *italic*, atau format aneh lainnya.
 Kalau user meminta informasi real-time, lokasi terdekat, data terbaru, atau hasil pencarian aktual, jelaskan dengan jujur bahwa kamu tidak sedang mengakses internet, GPS, atau Google Maps secara langsung. Berikan saran umum saja."""
 ```
 
-### `max_output_tokens`
-Sempat ada jawaban terkesan kepotong, lalu dinaikkan dari:
+## Parameter generation
 ```python
-1024
+temperature = 0.7
+max_output_tokens = 1500
 ```
-menjadi sekitar:
-```python
-1500
-```
-
----
 
 ## Fungsi penting
-### `build_contents_from_history(recent_messages)`
-Mengubah hasil SQLite seperti:
-```python
-[("user", "..."), ("assistant", "...")]
-```
-menjadi `types.Content(...)` yang bisa dipakai Gemini.
-
-### `get_response(user_id, user_message, recent_messages)`
-Saat ini dipakai untuk:
-- membangun `contents` dari `recent_messages`
-- memanggil `client.aio.models.generate_content(...)`
-- mengembalikan `response.text`
-
-Catatan:
-- parameter `user_id` dan `user_message` saat ini masih ada, walaupun yang benar-benar dipakai utama adalah `recent_messages`
-- ini boleh dirapikan nanti, tapi belum wajib
+- `build_contents_from_history(recent_messages)`
+- `get_response(user_id, user_message, recent_messages)`
 
 ---
 
-# 8. Model Gemini yang dipakai
+# 10. `app/config.py`
 
-## Model lama
-Sebelumnya dipakai:
-```python
-gemini-2.5-flash
-```
-
-Limitnya:
-- RPM 5
-- TPM 250K
-- RPD 20
-
-Ini terlalu sempit untuk penggunaan lebih nyaman.
-
----
-
-## Model baru yang ditemukan
-Setelah dicek lewat API / dashboard, ditemukan model dengan limit lebih besar:
-
-```python
-GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
-```
-
-Limitnya:
-- **RPM 15**
-- **TPM 250K**
-- **RPD 500**
-
-Ini dianggap jauh lebih cocok untuk bot personal ini.
-
-### Kesimpulan tentang model
-- model baru sangat layak jadi default
-- karena bottleneck terbesar sebelumnya adalah **RPD**
-- dengan `RPD 500`, testing dan penggunaan harian jadi jauh lebih longgar
-
-Catatan:
-- model ini masih ada label `preview`
-- jadi bisa ada perubahan perilaku / stabilitas di masa depan
-
----
-
-# 9. Validasi hasil yang sudah terjadi
-
-## SQLite
-Sudah berhasil:
-- file `assistant.db` muncul
-- data masuk ke tabel `conversations`
-- query manual via `sqlite3` berhasil
-
-Contoh query yang dipakai:
-```sql
-SELECT id, user_id, role, message, created_at FROM conversations;
-```
-
----
-
-## Recent history
-Fungsi `get_recent_messages()` sudah dites dan berhasil output seperti:
-
-```python
-[
-    ('user', 'ayo kita tes memori: sekarang kita ada di jawa timur'),
-    ('assistant', '...'),
-    ('user', 'halo, ini coba memori')
-]
-```
-
-Ini menandakan:
-- data terbaca dari DB
-- urutan sudah benar (lama ke baru)
-
----
-
-## Context continuity
-Sudah dites dan berhasil:
-- bot tetap nyambung konteks dari percakapan sebelumnya
-- setelah pindah ke SQLite-backed history, konteks tetap jalan
-- model baru juga bisa melanjutkan konteks dengan cukup baik
-
----
-
-# 10. Insight penting dari testing chat
-
-Saat user bertanya:
-- tentang lokasi
-- cafe terdekat
-- rekomendasi real-time
-
-ditemukan bahwa model bisa terdengar meyakinkan, tapi:
-- **sebenarnya tidak melakukan pencarian internet / maps real-time**
-- jadi perlu dibatasi lewat prompt agar tidak misleading
-
-Karena itu prompt diarahkan agar model:
-- jujur saat tidak punya akses internet / GPS / Google Maps
-- hanya memberi saran umum jika tidak ada tool pencarian real-time
-
----
-
-# 11. Diskusi tentang multi-model / fallback
-
-User sempat bertanya apakah bisa pakai lebih dari satu model:
-- kalau model A quota habis, pindah ke model B
-
-## Jawaban
-- **bisa dibuat**
-- pola umumnya:
-  1. coba model utama
-  2. kalau quota habis, coba model cadangan
-  3. kalau semua gagal, kirim error ke user
-
-## Tapi keputusan saat ini
-**belum perlu diimplementasikan dulu**, karena:
-- model baru `gemini-3.1-flash-lite-preview` sudah punya `RPD 500`
-- untuk personal bot, kemungkinan ini sudah cukup
-- fallback model bisa ditambahkan nanti jika benar-benar diperlukan
-
----
-
-# 12. Cara cek model available dari terminal
-
-Sudah dibahas cara cek model yang tersedia untuk API key dengan script Python kecil.
-
-Contoh:
-
-```python
-from google import genai
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-for model in client.models.list():
-    print(model.name)
-```
-
-Ini dipakai untuk memastikan model benar-benar tersedia di API, bukan hanya terlihat di dashboard.
-
----
-
-# 13. Parameter / variable penting yang sudah dipakai
-
-## Di `app/config.py`
 ```python
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -439,109 +366,122 @@ GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 
 ---
 
-## Di `app/database.py`
+# 11. Model Gemini yang dipakai
+
+## Model sekarang
 ```python
-DB_NAME = "assistant.db"
+GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 ```
 
-Fungsi:
-- `get_connection()`
-- `init_db()`
-- `save_message(user_id, role, message)`
-- `get_recent_messages(user_id, limit=10)`
+## Limit
+- **RPM 15**
+- **TPM 250K**
+- **RPD 500**
 
-Parameter penting:
-- `limit=10` untuk recent history
-
----
-
-## Di `app/gemini.py`
-Variabel penting:
-- `client`
-- `SYSTEM_PROMPT`
-
-Parameter generation penting:
-- `temperature=0.7`
-- `max_output_tokens=1500` (arah final setelah sempat 1024)
-
-Fungsi penting:
-- `build_contents_from_history(recent_messages)`
-- `get_response(user_id, user_message, recent_messages)`
+## Catatan
+- Model ini masih berlabel `preview`
+- Bottleneck terbesar sebelumnya adalah RPD — sekarang sudah jauh lebih longgar
 
 ---
 
-## Di `app/bot.py`
-Fungsi penting:
-- `start(...)`
-- `handle_message(...)`
-- `main()`
+# 12. File `app/memory.py` — sudah dibuat, belum diintegrasikan
 
-Timeout builder:
-- `.connect_timeout(30)`
-- `.read_timeout(30)`
-- `.write_timeout(30)`
+```python
+import re
+from app.database import upsert_memory
+
+PATTERNS = [
+    ("nama_user", [
+        r"nama(?:ku| saya| gue| aku)?\s+(?:adalah\s+)?(\w+)",
+        r"(?:panggil|biasa dipanggil)\s+(?:aku|saya|gue)?\s*(\w+)",
+        r"aku\s+(\w+)\s*$",
+    ]),
+    ("hobi_user", [
+        r"hobi(?:ku| saya| gue| aku)?\s+(?:adalah\s+)?(.+)",
+        r"aku\s+suka\s+(.+)",
+        r"saya\s+suka\s+(.+)",
+        r"gue\s+suka\s+(.+)",
+    ]),
+    ("pekerjaan_user", [
+        r"pekerjaan(?:ku| saya| gue| aku)?\s+(?:adalah\s+)?(.+)",
+        r"kerja(?:ku| saya| gue| aku)?\s+(?:sebagai\s+)?(.+)",
+        r"aku\s+(?:adalah\s+)?(?:seorang\s+)?(.+?)(?:\s+di\s+.+)?$",
+        r"saya\s+(?:adalah\s+)?(?:seorang\s+)?(.+?)(?:\s+di\s+.+)?$",
+    ]),
+]
+
+def extract_and_save_memory(user_id, user_message):
+    message = user_message.lower().strip()
+
+    for key, patterns in PATTERNS:
+        for pattern in patterns:
+            match = re.search(pattern, message)
+            if match:
+                value = match.group(1).strip()
+                if value:
+                    upsert_memory(user_id, key, value)
+                break
+```
 
 ---
 
-# 14. Status proyek saat ini
+# 13. Status proyek saat ini
 
 ## Sudah jadi
-- Telegram bot aktif
-- polling jalan
-- Gemini API terhubung
-- model baru dengan quota lebih besar sudah dipakai
-- chat user dan assistant tersimpan di SQLite
-- recent history diambil dari DB
-- context percakapan sudah jalan setelah restart
-- output sudah lebih aman dari masalah “kepotong”
+- ✅ Telegram bot aktif dan polling
+- ✅ Gemini API terhubung
+- ✅ Model baru dengan quota lebih besar
+- ✅ Chat tersimpan di SQLite
+- ✅ Recent history diambil dari DB
+- ✅ Context percakapan jalan setelah restart
+- ✅ Database persisten via Railway Volume
+- ✅ Tabel `memories` sudah dibuat
+- ✅ File `app/memory.py` sudah dibuat
 
 ## Belum jadi
-- tabel `memories`
-- memory penting vs tidak penting
-- rule-based extraction
-- long-term memory injection ke prompt
-- semantic search / vector retrieval
-- fallback multi-model
-- deploy VPS production
+- ❌ `extract_and_save_memory()` belum dipanggil di `bot.py`
+- ❌ Memory belum diinject ke prompt Gemini
+- ❌ `get_all_memories()` belum dipakai
+- ❌ Semantic search / vector retrieval
+- ❌ Fallback multi-model
 
 ---
 
-# 15. Rekomendasi next step untuk agent berikutnya
+# 14. Rekomendasi next step untuk agent berikutnya
 
-## Next step terbaik
-### **Buat tabel `memories`**
-Tujuannya:
-- simpan fakta penting jangka panjang tentang user / proyek
-- tidak tergantung hanya pada recent history
+## Urutan yang harus dilanjutkan:
 
-## Rencana implementasi berikutnya
-Urutan yang disarankan:
+### Step 1 — Integrasi `memory.py` ke `bot.py`
+Tambahkan di `handle_message()`:
+```python
+from app.memory import extract_and_save_memory
 
-1. desain tabel `memories`
-2. buat fungsi insert / upsert memory
-3. buat rule-based extraction sederhana
-4. inject memory penting ke prompt bersama recent history
+# panggil setelah dapat user_message
+extract_and_save_memory(user_id, user_message)
+```
+
+### Step 2 — Inject memory ke prompt Gemini
+Di `app/gemini.py`, ambil memories dan inject ke system prompt:
+```python
+from app.database import get_all_memories
+
+memories = get_all_memories(user_id)
+# format jadi string dan tambahkan ke SYSTEM_PROMPT
+```
+
+### Step 3 — Test end-to-end
+- Kirim pesan yang mengandung nama / hobi / pekerjaan
+- Cek apakah masuk ke tabel `memories`
+- Cek apakah bot mengingat di percakapan berikutnya
 
 ---
 
-## Contoh memory penting yang nanti perlu disimpan
-Dari diskusi ini sendiri, contoh memory penting user:
-- default bahasa: **Bahasa Indonesia**
-- kalau diminta baru bahasa Inggris
-- gaya diskusi: **pelan-pelan**
-- jangan langsung full code besar
-- user sedang membangun **AI assistant Telegram berbasis Gemini**
-- fokus ke **hemat quota / hemat biaya / efisien**
-- bot bersifat **personal / 1 user**
+# 15. Prinsip arsitektur yang harus dijaga
 
----
-
-Kalau besok agent baru melanjutkan, patokan paling pentingnya adalah:
-
-## Prinsip arsitektur yang harus dijaga
 - tetap hemat request
-- sebisa mungkin tetap **1 API call per user message**
+- **1 API call per user message**
 - gunakan local logic / SQLite sebanyak mungkin
 - jangan buru-buru menambah fitur yang boros API
 - default bahasa Indonesia
-- pembahasan pelan-pelan dan praktis
+- pembahasan **pelan-pelan** dan praktis
+- jangan langsung lempar full code besar
