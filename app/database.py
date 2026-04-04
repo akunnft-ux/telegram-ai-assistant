@@ -102,3 +102,18 @@ def get_all_memories(user_id):
     conn.close()
 
     return rows
+
+def delete_memory(user_id, key):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    DELETE FROM memories
+    WHERE user_id = ? AND key = ?
+    """, (str(user_id), key))
+
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    return deleted > 0
