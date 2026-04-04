@@ -36,7 +36,6 @@ Kalau ada info baru, tambahkan di AKHIR jawabanmu dengan format:
 key: value
 [/MEMORY]"""
 
-# Definisi tool untuk Gemini
 TVL_TOOL = types.Tool(
     function_declarations=[
         types.FunctionDeclaration(
@@ -66,23 +65,20 @@ def build_system_prompt(user_id):
     return "\n\n".join(parts)
 
 
-def build_contents_from_history(recent_messages):
-    contents = []
-    for role, message in recent_messages:
-        gemini_role = "user" if role == "user" else "model"
-        contents.append(
-            types.Content(
-                role=gemini_role,
-                parts=[types.Part(text=message)]
-            )
-        )
-    return contents
-
-
 async def get_response(user_id, user_message, recent_messages):
     try:
         system_prompt = build_system_prompt(user_id)
-        contents = build_contents_from_history(recent_messages)
+
+        # Bangun contents pakai types.Content
+        contents = []
+        for role, message in recent_messages:
+            gemini_role = "user" if role == "user" else "model"
+            contents.append(
+                types.Content(
+                    role=gemini_role,
+                    parts=[types.Part(text=message)]
+                )
+            )
 
         # Call 1: Gemini putuskan pakai tool atau tidak
         response = client.models.generate_content(
@@ -93,13 +89,9 @@ async def get_response(user_id, user_message, recent_messages):
                 temperature=0.7,
                 max_output_tokens=1500,
                 tools=[TVL_TOOL],
-                thinking_config=types.ThinkingConfig(
-                    thinking_budget=0
-                )
             )
         )
 
-        # Cek apakah Gemini mau panggil tool
         candidate = response.candidates[0]
 
         # Cari function_call di semua parts
@@ -119,23 +111,31 @@ async def get_response(user_id, user_message, recent_messages):
             tool_result = await get_tvl_growth(protocol_name)
             formatted_result = format_tvl_result(tool_result)
 
-            # ✅ Pakai content ASLI dari Gemini (sudah ada thought_signature)
+            # ✅ Pakai candidate.content ASLI (bawa thought_signature)
             contents.append(candidate.content)
 
-            # ✅ Pakai types.Content & types.Part yang proper
-            contents.append(
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part(
-                            function_response=types.FunctionResponse(
-                                name="get_tvl_growth",
-                                response={"result": formatted_result}
-                            )
-                        )
-                    ]
+            # ✅ Bangun function response dengan thought_signature dari part asli
+            function_response_parts = []
+            for part in candidate.content.parts:
+                if hasattr(part, "function_call") and part.function_call:
+                    fr_part = types.Part(
+                        function_response=types.FunctionResponse(
+                            name=part.function_call.name,
+                            response={"result": formatted_result}
+                        ),
+                    )
+                    # Salin thought_signature jika ada
+                    if hasattr(part, "thought_signature") and part.thought_signature:
+                        fr_part.thought_signature = part.thought_signature
+                    function_response_parts.append(fr_part)
+
+            if function_response_parts:
+                contents.append(
+                    types.Content(
+                        role="user",
+                        parts=function_response_parts
+                    )
                 )
-            )
 
             # Call 2: Gemini rangkum hasil tool
             response2 = client.models.generate_content(
@@ -146,15 +146,12 @@ async def get_response(user_id, user_message, recent_messages):
                     temperature=0.7,
                     max_output_tokens=1500,
                     tools=[TVL_TOOL],
-                    thinking_config=types.ThinkingConfig(
-                        thinking_budget=0
-                    )
                 )
             )
 
             return response2.text if response2.text else formatted_result
 
-        # Tidak pakai tool, return response biasa
+        # Tidak pakai tool
         if not response.text:
             print("⚠️ Gemini response kosong")
             return "Maaf, aku tidak bisa memproses pesanmu. Coba kirim ulang ya."
@@ -164,6 +161,15 @@ async def get_response(user_id, user_message, recent_messages):
     except Exception as e:
         error_msg = str(e).lower()
         print(f"❌ Gemini error: {e}")
+
+        if "thought_signature" in error_msg:
+            # Fallback: kalau masih error thought_signature, langsung return hasil tool
+            print("⚠️ Thought signature error, using direct tool result")
+            try:
+                # Coba return formatted_result yang sudah ada
+                return formatted_result
+            except:
+                pass
 
         if "quota" in error_msg or "429" in error_msg or "resource" in error_msg:
             return "Maaf, quota API aku lagi habis. Coba lagi dalam beberapa menit ya."
