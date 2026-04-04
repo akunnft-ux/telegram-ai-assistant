@@ -22,6 +22,19 @@ def init_db():
     )
     """)
 
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, key)
+    )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -54,4 +67,37 @@ def get_recent_messages(user_id, limit=10):
     conn.close()
 
     rows.reverse()  # biar urutan lama -> baru
+    return rows
+
+def upsert_memory(user_id, key, value):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    INSERT INTO memories (user_id, key, value)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id, key)
+    DO UPDATE SET value = excluded.value,
+                  updated_at = CURRENT_TIMESTAMP
+    """, (str(user_id), key, value))
+
+    conn.commit()
+    conn.close()
+
+
+# BARU: ambil semua memory milik user
+def get_all_memories(user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT key, value
+    FROM memories
+    WHERE user_id = ?
+    ORDER BY updated_at DESC
+    """, (str(user_id),))
+
+    rows = cursor.fetchall()
+    conn.close()
+
     return rows
