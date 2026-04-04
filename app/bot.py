@@ -19,7 +19,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_message(user_id, "user", user_message)
 
     # Ambil recent history dari DB
-    recent_messages = get_recent_messages(user_id, limit=10)
+    recent_messages = get_recent_messages(user_id, limit=20)
 
     # Typing indicator
     await update.message.chat.send_action("typing")
