@@ -78,12 +78,30 @@ async def get_response(user_id, user_message, recent_messages):
             config={
                 "system_instruction": system_prompt,
                 "temperature": 0.7,
-                "max_output_tokens": 2048,
+                "max_output_tokens": 1500,
             }
         )
+
+        if not response.text:
+            print("⚠️ Gemini response kosong")
+            return "Maaf, aku tidak bisa memproses pesanmu. Coba kirim ulang ya."
 
         return response.text
 
     except Exception as e:
+        error_msg = str(e).lower()
         print(f"❌ Gemini error: {e}")
+
+        if "quota" in error_msg or "429" in error_msg or "resource" in error_msg:
+            return "Maaf, quota API aku lagi habis. Coba lagi dalam beberapa menit ya."
+
+        if "timeout" in error_msg or "deadline" in error_msg:
+            return "Maaf, server lagi lambat. Coba lagi sebentar ya."
+
+        if "api key" in error_msg or "401" in error_msg or "403" in error_msg:
+            return "Maaf, ada masalah autentikasi. Hubungi admin."
+
+        if "model" in error_msg or "not found" in error_msg or "404" in error_msg:
+            return "Maaf, model AI sedang tidak tersedia. Coba lagi nanti."
+
         return "Maaf, aku lagi ada gangguan. Coba lagi nanti ya."
