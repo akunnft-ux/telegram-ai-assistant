@@ -1,6 +1,6 @@
 import sqlite3
 
-DB_NAME = "assistant.db"
+DB_NAME = "/data/assistant.db"
 
 
 def get_connection():
