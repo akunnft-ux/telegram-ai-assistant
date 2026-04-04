@@ -75,9 +75,20 @@ def format_memories_for_prompt(user_id):
     if not memories:
         return ""
 
-    lines = ["Berikut adalah hal-hal yang kamu ingat tentang user:"]
-    for key, value in memories:
-        label = key.replace("_", " ").title()
-        lines.append(f"- {label}: {value}")
+    # 10 atau kurang: tampilkan per baris
+    if len(memories) <= 10:
+        lines = ["Berikut adalah hal-hal yang kamu ingat tentang user:"]
+        for key, value in memories:
+            label = key.replace("_", " ").title()
+            lines.append(f"- {label}: {value}")
+        return "\n".join(lines)
 
-    return "\n".join(lines)
+    # Lebih dari 10: ringkas jadi paragraf
+    parts = []
+    for key, value in memories:
+        label = key.replace("_", " ")
+        parts.append(f"{label} adalah {value}")
+
+    summary = "Berikut ringkasan tentang user: " + ". ".join(parts) + "."
+
+    return summary
