@@ -14,7 +14,8 @@ Kalau memberi daftar, batasi 3-5 poin saja.
 Gunakan format teks biasa yang rapi untuk Telegram.
 Hindari markdown seperti **bold**, *italic*, atau format aneh lainnya.
 Kalau user meminta informasi real-time, lokasi terdekat, data terbaru, atau hasil pencarian aktual, jelaskan dengan jujur bahwa kamu tidak sedang mengakses internet, GPS, atau Google Maps secara langsung. Berikan saran umum saja.
-Kamu punya akses ke data DeFi dari DefiLlama. Gunakan tool yang tersedia kalau user tanya soal TVL protokol."""
+Kamu punya akses ke data DeFi dari DefiLlama. Gunakan tool yang tersedia kalau user tanya soal TVL protokol.
+Kamu juga bisa membaca dokumen yang dikirim user (PDF, DOCX, TXT, CSV, XLSX, JSON, dan file teks lainnya). Kalau user kirim dokumen, baca isinya dan bantu sesuai permintaan user. Kalau tidak ada instruksi spesifik, rangkum isi dokumen tersebut."""
 
 MEMORY_EXTRACTION_PROMPT = """
 Kamu juga punya tugas tambahan: ekstrak informasi personal dari pesan user.
@@ -181,3 +182,75 @@ async def get_response(user_id, user_message, recent_messages):
             return "Maaf, model AI sedang tidak tersedia. Coba lagi nanti."
 
         return "Maaf, aku lagi ada gangguan. Coba lagi nanti ya."
+
+
+async def summarize_chunk(chunk_text, chunk_number, total_chunks, file_name):
+    """Rangkum 1 chunk dokumen — 1 API call"""
+    try:
+        prompt = f"""Kamu sedang membaca bagian {chunk_number} dari {total_chunks} bagian dokumen "{file_name}".
+
+Tugas: Rangkum bagian ini dengan detail yang cukup. Pertahankan informasi penting, angka, nama, dan poin-poin utama. Jangan hilangkan data penting.
+
+Isi dokumen bagian {chunk_number}:
+{chunk_text}
+
+Rangkum dalam Bahasa Indonesia:"""
+
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            config={
+                "system_instruction": "Kamu adalah asisten yang merangkum dokumen. Rangkum dengan detail, pertahankan semua informasi penting.",
+                "temperature": 0.3,
+                "max_output_tokens": 2000,
+            }
+        )
+
+        if response.text:
+            return response.text
+        return f"[Gagal merangkum bagian {chunk_number}]"
+
+    except Exception as e:
+        print(f"❌ Error summarize chunk {chunk_number}: {e}")
+        return f"[Error merangkum bagian {chunk_number}: {e}]"
+
+
+async def process_long_document(user_id, chunks, file_name, user_caption, recent_messages):
+    """Proses dokumen panjang: rangkum per chunk, lalu jawab final"""
+    try:
+        print(f"📄 Processing {len(chunks)} chunks for {file_name}")
+
+        # Step 1: Rangkum setiap chunk
+        summaries = []
+        for i, chunk in enumerate(chunks, 1):
+            print(f"  📝 Summarizing chunk {i}/{len(chunks)}...")
+            summary = await summarize_chunk(chunk, i, len(chunks), file_name)
+            summaries.append(f"[Bagian {i}]\n{summary}")
+
+        combined_summary = "\n\n".join(summaries)
+
+        # Step 2: Kirim gabungan summary ke Gemini untuk jawaban final
+        if user_caption:
+            final_prompt = f"""Berikut adalah rangkuman dari dokumen "{file_name}" yang dikirim user:
+
+{combined_summary}
+
+Perintah user: {user_caption}
+
+Jawab sesuai permintaan user berdasarkan isi dokumen di atas."""
+        else:
+            final_prompt = f"""Berikut adalah rangkuman dari dokumen "{file_name}" yang dikirim user:
+
+{combined_summary}
+
+Tolong berikan rangkuman lengkap dan poin-poin penting dari dokumen ini."""
+
+        # Final call pakai get_response biasa (dapat memory + context)
+        raw_response = await get_response(user_id, final_prompt, recent_messages)
+
+        print(f"  ✅ Document processing done. Total API calls: {len(chunks) + 1}")
+        return raw_response
+
+    except Exception as e:
+        print(f"❌ Error process_long_document: {e}")
+        return "Maaf, gagal memproses dokumen panjang ini. Coba kirim ulang ya."
