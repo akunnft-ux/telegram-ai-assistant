@@ -310,3 +310,54 @@ Format yang WAJIB diikuti:
     except Exception as e:
         print(f"❌ Error generate document content: {e}")
         return None
+
+async def analyze_image(user_id, image_bytes, caption, recent_messages, mime_type="image/jpeg"):
+    """Analisis gambar yang dikirim user — 1 API call"""
+    try:
+        system_prompt = build_system_prompt(user_id)
+
+        if caption:
+            text_prompt = caption
+        else:
+            text_prompt = "Analisis gambar ini. Jelaskan apa yang kamu lihat secara detail."
+
+        image_part = types.Part.from_bytes(
+            data=image_bytes,
+            mime_type=mime_type
+        )
+
+        text_part = types.Part(text=text_prompt)
+
+        contents = [
+            types.Content(
+                role="user",
+                parts=[image_part, text_part]
+            )
+        ]
+
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.7,
+                max_output_tokens=1500,
+            )
+        )
+
+        if response.text:
+            return response.text
+
+        return "Maaf, aku tidak bisa menganalisis gambar ini. Coba kirim ulang ya."
+
+    except Exception as e:
+        error_msg = str(e).lower()
+        print(f"❌ Error analyze image: {e}")
+
+        if "quota" in error_msg or "429" in error_msg:
+            return "Maaf, quota API lagi habis. Coba lagi nanti ya."
+
+        if "not supported" in error_msg or "invalid" in error_msg:
+            return "Maaf, model ini belum bisa analisis gambar. Coba kirim ulang nanti ya."
+
+        return "Maaf, gagal menganalisis gambar. Coba kirim ulang ya."

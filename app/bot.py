@@ -3,7 +3,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 from app.config import TELEGRAM_BOT_TOKEN
-from app.gemini import get_response, process_long_document, generate_document_content
+from app.gemini import get_response, process_long_document, generate_document_content, analyze_image
 from app.database import init_db, save_message, get_recent_messages, get_all_memories, delete_memory
 from app.memory import extract_memory_from_response
 from app.tools import (
@@ -11,6 +11,16 @@ from app.tools import (
     SUPPORTED_EXTENSIONS, CHUNK_SIZE,
     create_pdf_file, create_docx_file,
 )
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+IMAGE_MIME_MAP = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -22,22 +32,59 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
 
     save_message(user_id, "user", user_message)
-
     recent_messages = get_recent_messages(user_id, limit=20)
 
     await update.message.chat.send_action("typing")
 
     raw_response = await get_response(user_id, user_message, recent_messages)
-
     clean_response = extract_memory_from_response(user_id, raw_response)
-
     save_message(user_id, "assistant", clean_response)
 
     await update.message.reply_text(clean_response)
 
 
+# ============================================
+# PHOTO HANDLER (kirim sebagai foto)
+# ============================================
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    photo = update.message.photo[-1]
+    caption = update.message.caption or ""
+
+    await update.message.chat.send_action("typing")
+
+    try:
+        file = await photo.get_file()
+        image_bytes = await file.download_as_bytearray()
+
+        user_msg = "[User mengirim gambar]"
+        if caption:
+            user_msg += f"\nPesan: {caption}"
+        save_message(user_id, "user", user_msg)
+
+        recent_messages = get_recent_messages(user_id, limit=20)
+
+        raw_response = await analyze_image(user_id, bytes(image_bytes), caption, recent_messages)
+        clean_response = extract_memory_from_response(user_id, raw_response)
+        save_message(user_id, "assistant", clean_response)
+
+        if len(clean_response) > 4096:
+            for i in range(0, len(clean_response), 4096):
+                await update.message.reply_text(clean_response[i:i + 4096])
+        else:
+            await update.message.reply_text(clean_response)
+
+    except Exception as e:
+        print(f"❌ Error handle photo: {e}")
+        await update.message.reply_text("Maaf, gagal menganalisis gambar. Coba kirim ulang ya.")
+
+
+# ============================================
+# DOCUMENT HANDLER (file dokumen + gambar sebagai file)
+# ============================================
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle dokumen yang dikirim user"""
     user_id = str(update.effective_user.id)
     document = update.message.document
 
@@ -54,6 +101,40 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, ext = os.path.splitext(file_name)
     ext = ext.lower()
 
+    # --- Kalau file gambar, analisis pakai Gemini ---
+    if ext in IMAGE_EXTENSIONS:
+        await update.message.chat.send_action("typing")
+
+        try:
+            file = await document.get_file()
+            image_bytes = await file.download_as_bytearray()
+            caption = update.message.caption or ""
+            mime_type = IMAGE_MIME_MAP.get(ext, "image/jpeg")
+
+            user_msg = f"[User mengirim gambar: {file_name}]"
+            if caption:
+                user_msg += f"\nPesan: {caption}"
+            save_message(user_id, "user", user_msg)
+
+            recent_messages = get_recent_messages(user_id, limit=20)
+
+            raw_response = await analyze_image(user_id, bytes(image_bytes), caption, recent_messages, mime_type)
+            clean_response = extract_memory_from_response(user_id, raw_response)
+            save_message(user_id, "assistant", clean_response)
+
+            if len(clean_response) > 4096:
+                for i in range(0, len(clean_response), 4096):
+                    await update.message.reply_text(clean_response[i:i + 4096])
+            else:
+                await update.message.reply_text(clean_response)
+            return
+
+        except Exception as e:
+            print(f"❌ Error handle image document: {e}")
+            await update.message.reply_text("Maaf, gagal menganalisis gambar. Coba kirim ulang ya.")
+            return
+
+    # --- Kalau bukan gambar, proses sebagai dokumen teks ---
     if ext not in SUPPORTED_EXTENSIONS:
         supported = ", ".join(SUPPORTED_EXTENSIONS)
         await update.message.reply_text(
@@ -93,7 +174,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             raw_response = await get_response(user_id, user_message, recent_messages)
             clean_response = extract_memory_from_response(user_id, raw_response)
-
             save_message(user_id, "assistant", clean_response)
 
         else:
@@ -118,7 +198,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_id, chunks, file_name, caption, recent_messages
             )
             clean_response = extract_memory_from_response(user_id, raw_response)
-
             save_message(user_id, "assistant", clean_response)
 
         if len(clean_response) > 4096:
@@ -137,7 +216,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================
 
 async def create_document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, doc_type: str):
-    """Handler untuk buat PDF atau DOCX"""
     user_id = str(update.effective_user.id)
 
     if not context.args:
@@ -158,7 +236,6 @@ async def create_document_handler(update: Update, context: ContextTypes.DEFAULT_
 
     recent_messages = get_recent_messages(user_id, limit=20)
 
-    # Generate konten via Gemini
     content = await generate_document_content(user_id, instruction, recent_messages)
 
     if not content:
@@ -168,13 +245,11 @@ async def create_document_handler(update: Update, context: ContextTypes.DEFAULT_
     try:
         file_path = f"/tmp/{user_id}_document.{doc_type}"
 
-        # Buat file
         if doc_type == "pdf":
             title = create_pdf_file(content, file_path)
         else:
             title = create_docx_file(content, file_path)
 
-        # Bersihkan judul untuk nama file
         safe_title = "".join(c for c in title if c.isalnum() or c in " -_")[:50].strip()
         if not safe_title:
             safe_title = "dokumen"
@@ -188,7 +263,6 @@ async def create_document_handler(update: Update, context: ContextTypes.DEFAULT_
                 caption=f"📄 {title}"
             )
 
-        # Simpan ke percakapan
         save_message(user_id, "user", f"/{doc_type} {instruction}")
         save_message(user_id, "assistant", f"[Dokumen {doc_type.upper()} dibuat: {title}]")
 
@@ -288,6 +362,9 @@ def main():
     app.add_handler(CommandHandler("clearmemory", clearmemory_command))
     app.add_handler(CommandHandler("pdf", pdf_command))
     app.add_handler(CommandHandler("docx", docx_command))
+
+    # Photo handler
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     # Document handler
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
