@@ -6,7 +6,7 @@ from app.config import TELEGRAM_BOT_TOKEN
 from app.gemini import get_response
 from app.database import init_db, save_message, get_recent_messages, get_all_memories, delete_memory
 from app.memory import extract_memory_from_response
-from app.tools import extract_text_from_file, SUPPORTED_EXTENSIONS
+from app.tools import extract_text_from_file, split_text_into_chunks, SUPPORTED_EXTENSIONS, CHUNK_SIZE
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):

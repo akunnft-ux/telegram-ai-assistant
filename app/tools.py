@@ -1,6 +1,8 @@
 import httpx
 from datetime import datetime, timedelta
 
+CHUNK_SIZE = 8000  # karakter per chunk
+CHUNK_OVERLAP = 500  # overlap antar chunk biar konteks tidak putus
 
 DEFILLAMA_BASE_URL = "https://api.llama.fi"
 
@@ -243,9 +245,6 @@ SUPPORTED_EXTENSIONS = list(DOCUMENT_READERS.keys())
 # ============================================
 # DOCUMENT CHUNKING
 # ============================================
-
-CHUNK_SIZE = 8000  # karakter per chunk
-CHUNK_OVERLAP = 500  # overlap antar chunk biar konteks tidak putus
 
 
 def split_text_into_chunks(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
