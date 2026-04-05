@@ -299,3 +299,141 @@ def extract_text_from_file(file_path):
         return None, "Dokumen kosong atau tidak bisa dibaca."
 
     return text, None
+
+
+# ============================================
+# DOCUMENT CREATOR TOOLS
+# ============================================
+
+def safe_text_for_pdf(text):
+    """Clean text agar aman untuk PDF built-in fonts"""
+    replacements = {
+        '\u2018': "'", '\u2019': "'",
+        '\u201c': '"', '\u201d': '"',
+        '\u2013': '-', '\u2014': '--',
+        '\u2026': '...', '\u2022': '-',
+        '\u00a0': ' ', '\u200b': '',
+        '\u2003': ' ', '\u2002': ' ',
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+
+    text = text.replace("**", "").replace("*", "")
+    return text.encode('latin-1', 'replace').decode('latin-1')
+
+
+def parse_title_from_content(content):
+    """Ambil judul dari baris pertama yang diawali #"""
+    lines = content.strip().split("\n")
+    title = "Dokumen"
+    body_start = 0
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("# ") and not stripped.startswith("## "):
+            title = stripped[2:].strip().replace("**", "").replace("*", "")
+            body_start = i + 1
+            break
+
+    body = "\n".join(lines[body_start:])
+    return title, body
+
+
+def create_pdf_file(content, file_path):
+    """Buat file PDF dari konten terstruktur"""
+    from fpdf import FPDF
+    from datetime import datetime
+
+    title, body = parse_title_from_content(content)
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    # Title
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.multi_cell(0, 10, safe_text_for_pdf(title), align="C")
+    pdf.ln(3)
+
+    # Date
+    pdf.set_font("Helvetica", "I", 9)
+    pdf.cell(0, 6, f"Dibuat: {datetime.now().strftime('%d %B %Y, %H:%M')}", ln=True, align="C")
+    pdf.ln(8)
+
+    # Separator line
+    pdf.set_draw_color(200, 200, 200)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(8)
+
+    # Body
+    for line in body.split("\n"):
+        stripped = line.strip()
+        safe_line = safe_text_for_pdf(stripped)
+
+        if not stripped:
+            pdf.ln(4)
+        elif stripped.startswith("### "):
+            pdf.ln(4)
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.multi_cell(0, 7, safe_text_for_pdf(stripped[4:]))
+            pdf.ln(2)
+        elif stripped.startswith("## "):
+            pdf.ln(6)
+            pdf.set_font("Helvetica", "B", 14)
+            pdf.multi_cell(0, 8, safe_text_for_pdf(stripped[3:]))
+            pdf.ln(3)
+        elif stripped.startswith("- "):
+            pdf.set_font("Helvetica", "", 11)
+            x = pdf.get_x()
+            pdf.cell(8)
+            pdf.multi_cell(0, 6, safe_text_for_pdf(f"- {stripped[2:]}"))
+            pdf.ln(1)
+        else:
+            pdf.set_font("Helvetica", "", 11)
+            pdf.multi_cell(0, 6, safe_line)
+            pdf.ln(2)
+
+    pdf.output(file_path)
+    return title
+
+
+def create_docx_file(content, file_path):
+    """Buat file DOCX dari konten terstruktur"""
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from datetime import datetime
+
+    title, body = parse_title_from_content(content)
+
+    doc = Document()
+
+    # Title
+    title_para = doc.add_heading(title, level=0)
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # Date
+    date_para = doc.add_paragraph()
+    date_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = date_para.add_run(f"Dibuat: {datetime.now().strftime('%d %B %Y, %H:%M')}")
+    run.font.size = Pt(9)
+    run.font.color.rgb = RGBColor(128, 128, 128)
+
+    # Body
+    for line in body.split("\n"):
+        stripped = line.strip()
+
+        if not stripped:
+            continue
+        elif stripped.startswith("### "):
+            doc.add_heading(stripped[4:].replace("**", ""), level=3)
+        elif stripped.startswith("## "):
+            doc.add_heading(stripped[3:].replace("**", ""), level=2)
+        elif stripped.startswith("- "):
+            doc.add_paragraph(stripped[2:].replace("**", ""), style="List Bullet")
+        else:
+            clean = stripped.replace("**", "").replace("*", "")
+            doc.add_paragraph(clean)
+
+    doc.save(file_path)
+    return title

@@ -261,3 +261,52 @@ Tolong berikan rangkuman lengkap dan poin-poin penting dari dokumen ini."""
     except Exception as e:
         print(f"❌ Error process_long_document: {e}")
         return "Maaf, gagal memproses dokumen panjang ini. Coba kirim ulang ya."
+
+
+async def generate_document_content(user_id, instruction, recent_messages):
+    """Generate konten terstruktur untuk dokumen PDF/DOCX"""
+    try:
+        # Bangun konteks dari percakapan terakhir
+        context_lines = []
+        for role, message in recent_messages[-10:]:
+            speaker = "User" if role == "user" else "Asisten"
+            msg = message[:500] + "..." if len(message) > 500 else message
+            context_lines.append(f"{speaker}: {msg}")
+
+        context = "\n".join(context_lines) if context_lines else "Tidak ada percakapan sebelumnya."
+
+        prompt = f"""Konteks percakapan terakhir:
+{context}
+
+Instruksi user: {instruction}
+
+Buatkan konten dokumen berdasarkan instruksi di atas.
+
+Format yang WAJIB diikuti:
+- Baris pertama HARUS judul dokumen, diawali # (contoh: # Judul Dokumen)
+- Sub-bagian diawali ## (contoh: ## Pendahuluan)
+- Sub-sub-bagian diawali ### (contoh: ### Detail)
+- Poin-poin diawali - (contoh: - Poin pertama)
+- Paragraf biasa tanpa awalan apapun
+- JANGAN pakai **bold**, *italic*, atau format markdown lain selain # ## ### dan -
+- Tulis dalam Bahasa Indonesia
+- Tulis lengkap, detail, dan informatif
+- Minimal 500 kata"""
+
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            config={
+                "system_instruction": "Kamu adalah penulis dokumen profesional. Tulis konten yang terstruktur, lengkap, informatif, dan rapi. Ikuti format yang diminta dengan tepat.",
+                "temperature": 0.7,
+                "max_output_tokens": 4000,
+            }
+        )
+
+        if response.text:
+            return response.text
+        return None
+
+    except Exception as e:
+        print(f"❌ Error generate document content: {e}")
+        return None

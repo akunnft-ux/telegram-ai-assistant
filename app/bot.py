@@ -3,10 +3,14 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 from app.config import TELEGRAM_BOT_TOKEN
-from app.gemini import get_response, process_long_document
+from app.gemini import get_response, process_long_document, generate_document_content
 from app.database import init_db, save_message, get_recent_messages, get_all_memories, delete_memory
 from app.memory import extract_memory_from_response
-from app.tools import extract_text_from_file, split_text_into_chunks, SUPPORTED_EXTENSIONS, CHUNK_SIZE
+from app.tools import (
+    extract_text_from_file, split_text_into_chunks,
+    SUPPORTED_EXTENSIONS, CHUNK_SIZE,
+    create_pdf_file, create_docx_file,
+)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -33,7 +37,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle dokumen — support dokumen panjang dengan chunking"""
+    """Handle dokumen yang dikirim user"""
     user_id = str(update.effective_user.id)
     document = update.message.document
 
@@ -43,12 +47,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_name = document.file_name or "unknown"
     file_size = document.file_size or 0
 
-    # Batasi ukuran file (max 20MB)
     if file_size > 20 * 1024 * 1024:
         await update.message.reply_text("File terlalu besar. Maksimal 20MB ya.")
         return
 
-    # Cek ekstensi
     _, ext = os.path.splitext(file_name)
     ext = ext.lower()
 
@@ -62,15 +64,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action("typing")
 
     try:
-        # Download file
         file = await document.get_file()
         tmp_path = f"/tmp/{user_id}_{file_name}"
         await file.download_to_drive(tmp_path)
 
-        # Ekstrak teks (tanpa batasan karakter)
         text, error = extract_text_from_file(tmp_path)
 
-        # Hapus file temporary
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
@@ -81,7 +80,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = update.message.caption or ""
         char_count = len(text)
 
-        # === DOKUMEN PENDEK: langsung kirim 1 call ===
         if char_count <= CHUNK_SIZE:
             if caption:
                 user_message = f"[Dokumen: {file_name} ({char_count} karakter)]\n\nPesan: {caption}\n\nIsi dokumen:\n{text}"
@@ -98,7 +96,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             save_message(user_id, "assistant", clean_response)
 
-        # === DOKUMEN PANJANG: chunking ===
         else:
             chunks = split_text_into_chunks(text)
             num_chunks = len(chunks)
@@ -108,7 +105,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Sedang membaca... estimasi {num_chunks + 1} langkah."
             )
 
-            # Simpan info dokumen ke DB
             doc_info = f"[Dokumen panjang: {file_name} ({char_count:,} karakter, {num_chunks} bagian)]"
             if caption:
                 doc_info += f"\nPesan user: {caption}"
@@ -125,7 +121,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             save_message(user_id, "assistant", clean_response)
 
-        # Kirim respons (pecah kalau >4096)
         if len(clean_response) > 4096:
             for i in range(0, len(clean_response), 4096):
                 await update.message.reply_text(clean_response[i:i + 4096])
@@ -137,6 +132,87 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Maaf, gagal membaca dokumen. Coba kirim ulang ya.")
 
 
+# ============================================
+# DOCUMENT CREATION COMMANDS
+# ============================================
+
+async def create_document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, doc_type: str):
+    """Handler untuk buat PDF atau DOCX"""
+    user_id = str(update.effective_user.id)
+
+    if not context.args:
+        examples = (
+            f"Tulis instruksi setelah /{doc_type}\n\n"
+            f"Contoh:\n"
+            f"/{doc_type} buatkan rangkuman tentang AI\n"
+            f"/{doc_type} rangkum percakapan kita tadi\n"
+            f"/{doc_type} buat laporan dari dokumen yang aku kirim"
+        )
+        await update.message.reply_text(examples)
+        return
+
+    instruction = " ".join(context.args)
+
+    await update.message.chat.send_action("typing")
+    await update.message.reply_text(f"📝 Sedang membuat dokumen {doc_type.upper()}...")
+
+    recent_messages = get_recent_messages(user_id, limit=20)
+
+    # Generate konten via Gemini
+    content = await generate_document_content(user_id, instruction, recent_messages)
+
+    if not content:
+        await update.message.reply_text("Gagal membuat konten dokumen. Coba lagi ya.")
+        return
+
+    try:
+        file_path = f"/tmp/{user_id}_document.{doc_type}"
+
+        # Buat file
+        if doc_type == "pdf":
+            title = create_pdf_file(content, file_path)
+        else:
+            title = create_docx_file(content, file_path)
+
+        # Bersihkan judul untuk nama file
+        safe_title = "".join(c for c in title if c.isalnum() or c in " -_")[:50].strip()
+        if not safe_title:
+            safe_title = "dokumen"
+
+        await update.message.chat.send_action("upload_document")
+
+        with open(file_path, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=f"{safe_title}.{doc_type}",
+                caption=f"📄 {title}"
+            )
+
+        # Simpan ke percakapan
+        save_message(user_id, "user", f"/{doc_type} {instruction}")
+        save_message(user_id, "assistant", f"[Dokumen {doc_type.upper()} dibuat: {title}]")
+
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        print(f"✅ {doc_type.upper()} created: {title}")
+
+    except Exception as e:
+        print(f"❌ Error create {doc_type}: {e}")
+        await update.message.reply_text(f"Gagal membuat file {doc_type.upper()}. Coba lagi ya.")
+
+
+async def pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await create_document_handler(update, context, "pdf")
+
+
+async def docx_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await create_document_handler(update, context, "docx")
+
+
+# ============================================
+# MEMORY COMMANDS
+# ============================================
 
 async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -189,6 +265,10 @@ async def clearmemory_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(f"Done. {deleted} memory dihapus semua.")
 
 
+# ============================================
+# MAIN
+# ============================================
+
 def main():
     init_db()
 
@@ -201,14 +281,18 @@ def main():
         .build()
     )
 
+    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("memory", memory_command))
     app.add_handler(CommandHandler("forget", forget_command))
     app.add_handler(CommandHandler("clearmemory", clearmemory_command))
+    app.add_handler(CommandHandler("pdf", pdf_command))
+    app.add_handler(CommandHandler("docx", docx_command))
 
-    # Handler dokumen — TARUH SEBELUM handler text
+    # Document handler
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
+    # Text handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("🤖 Bot is running...")
