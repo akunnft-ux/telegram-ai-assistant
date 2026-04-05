@@ -132,3 +132,12 @@ def delete_all_memories(user_id):
     conn.close()
 
     return deleted
+
+def clear_history(user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM conversations WHERE user_id = ?", (str(user_id),))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted

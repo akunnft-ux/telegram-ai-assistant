@@ -4,7 +4,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 
 from app.config import TELEGRAM_BOT_TOKEN
 from app.gemini import get_response, process_long_document, generate_document_content, analyze_image
-from app.database import init_db, save_message, get_recent_messages, get_all_memories, delete_memory
+from app.database import init_db, save_message, get_recent_messages, get_all_memories, delete_memory, clear_history
 from app.memory import extract_memory_from_response
 from app.tools import (
     extract_text_from_file, split_text_into_chunks,
@@ -339,6 +339,15 @@ async def clearmemory_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(f"Done. {deleted} memory dihapus semua.")
 
 
+async def clearhistory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    deleted = clear_history(user_id)
+
+    if deleted > 0:
+        await update.message.reply_text(f"Done. {deleted} pesan dihapus. Percakapan dimulai dari awal, tapi aku masih ingat info tentang kamu.")
+    else:
+        await update.message.reply_text("Tidak ada history yang perlu dihapus.")
+        
 # ============================================
 # MAIN
 # ============================================
@@ -360,6 +369,7 @@ def main():
     app.add_handler(CommandHandler("memory", memory_command))
     app.add_handler(CommandHandler("forget", forget_command))
     app.add_handler(CommandHandler("clearmemory", clearmemory_command))
+    app.add_handler(CommandHandler("clearhistory", clearhistory_command))
     app.add_handler(CommandHandler("pdf", pdf_command))
     app.add_handler(CommandHandler("docx", docx_command))
 
