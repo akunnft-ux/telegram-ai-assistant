@@ -229,7 +229,7 @@ async def process_long_document(user_id, chunks, file_name, user_caption, recent
 
         combined_summary = "\n\n".join(summaries)
 
-        # Step 2: Kirim gabungan summary ke Gemini untuk jawaban final
+        # Step 2: Bangun final prompt
         if user_caption:
             final_prompt = f"""Berikut adalah rangkuman dari dokumen "{file_name}" yang dikirim user:
 
@@ -245,8 +245,15 @@ Jawab sesuai permintaan user berdasarkan isi dokumen di atas."""
 
 Tolong berikan rangkuman lengkap dan poin-poin penting dari dokumen ini."""
 
-        # Final call pakai get_response biasa (dapat memory + context)
-        raw_response = await get_response(user_id, final_prompt, recent_messages)
+        # Step 3: Simpan final_prompt ke DB agar masuk recent_messages
+        from app.database import save_message, get_recent_messages
+        save_message(user_id, "user", final_prompt)
+
+        # Step 4: Ambil recent_messages BARU (sudah termasuk final_prompt)
+        fresh_messages = get_recent_messages(user_id, limit=20)
+
+        # Step 5: Kirim ke Gemini — sekarang Gemini bisa baca summary-nya
+        raw_response = await get_response(user_id, final_prompt, fresh_messages)
 
         print(f"  ✅ Document processing done. Total API calls: {len(chunks) + 1}")
         return raw_response
