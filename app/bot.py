@@ -348,6 +348,24 @@ async def clearhistory_command(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         await update.message.reply_text("Tidak ada history yang perlu dihapus.")
         
+        
+async def post_init(application):
+    """Register commands ke Telegram biar muncul di menu"""
+    from telegram import BotCommand
+
+    commands = [
+        BotCommand("start", "Mulai percakapan"),
+        BotCommand("memory", "Lihat semua memory"),
+        BotCommand("forget", "Hapus 1 memory - /forget [key]"),
+        BotCommand("clearmemory", "Hapus semua memory"),
+        BotCommand("clearhistory", "Hapus semua percakapan"),
+        BotCommand("pdf", "Buat dokumen PDF - /pdf [instruksi]"),
+        BotCommand("docx", "Buat dokumen DOCX - /docx [instruksi]"),
+    ]
+
+    await application.bot.set_my_commands(commands)
+    print("✅ Bot commands registered")
+        
 # ============================================
 # MAIN
 # ============================================
@@ -361,6 +379,7 @@ def main():
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
+        .post_init(post_init)
         .build()
     )
 
