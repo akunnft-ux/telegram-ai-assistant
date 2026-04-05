@@ -3,7 +3,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 from app.config import TELEGRAM_BOT_TOKEN
-from app.gemini import get_response
+from app.gemini import get_response, process_long_document
 from app.database import init_db, save_message, get_recent_messages, get_all_memories, delete_memory
 from app.memory import extract_memory_from_response
 from app.tools import extract_text_from_file, split_text_into_chunks, SUPPORTED_EXTENSIONS, CHUNK_SIZE
