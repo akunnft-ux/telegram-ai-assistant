@@ -424,6 +424,8 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def daily_pick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
     user_id = str(update.effective_user.id)
 
     await update.message.reply_text("⏳ Mengambil data market...")
