@@ -451,6 +451,10 @@ async def daily_pick_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             await update.message.reply_text(full_text)
 
+    except Exception as e:
+        print(f"❌ Error /daily_pick: {e}")
+        await update.message.reply_text("Maaf, gagal membuat daily pick.")
+
 # ============================================
 # MEMORY COMMANDS
 # ============================================
