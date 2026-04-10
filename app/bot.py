@@ -437,19 +437,19 @@ async def daily_pick_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         prompt = build_daily_pick_prompt(market_data)
 
-        save_message(user_id, "user", "/daily_pick")
-        recent_messages = get_recent_messages(user_id, limit=5)
-
-        raw_response = await get_response(user_id, prompt, recent_messages)
+        # Isolasi dari chat history — jangan bawa konteks tidak relevan
+        raw_response = await get_response(user_id, prompt, recent_messages=[])
         clean_response = extract_memory_from_response(user_id, raw_response)
+
+        save_message(user_id, "user", "/daily_pick")
         save_message(user_id, "assistant", clean_response)
 
-        await update.message.reply_text(f"📊 Daily Pick:\n\n{clean_response}")
-
-    except Exception as e:
-        print(f"❌ Error /daily_pick: {e}")
-        await update.message.reply_text("Maaf, gagal membuat daily pick.")
-
+        full_text = f"📊 Daily Pick:\n\n{clean_response}"
+        if len(full_text) > 4096:
+            for i in range(0, len(full_text), 4096):
+                await update.message.reply_text(full_text[i:i + 4096])
+        else:
+            await update.message.reply_text(full_text)
 
 # ============================================
 # MEMORY COMMANDS
