@@ -1,5 +1,7 @@
 import httpx
+import asyncio
 from datetime import datetime, timedelta
+from app.config import COINGECKO_API_KEY
 
 CHUNK_SIZE = 8000  # karakter per chunk
 CHUNK_OVERLAP = 500  # overlap antar chunk biar konteks tidak putus
@@ -94,6 +96,504 @@ def format_tvl_result(result: dict) -> str:
         f"- 30 hari lalu ({result['past_date']}): {format_usd(past)}\n"
         f"- Growth: {arrow}{growth}%"
     )
+
+# ============================================
+# CRYPTO MARKET TOOLS
+# ============================================
+
+COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
+COINGECKO_HEADERS = {"x-cg-demo-api-key": COINGECKO_API_KEY} if COINGECKO_API_KEY else {}
+
+FEAR_GREED_URL = "https://api.alternative.me/fng"
+DEXSCREENER_BASE_URL = "https://api.dexscreener.com"
+
+
+def format_usd(value):
+    """Format angka ke USD readable"""
+    if not value or value == 0:
+        return "\$0"
+    if value >= 1_000_000_000_000:
+        return f"${value / 1_000_000_000_000:.2f}T"
+    elif value >= 1_000_000_000:
+        return f"${value / 1_000_000_000:.2f}B"
+    elif value >= 1_000_000:
+        return f"${value / 1_000_000:.2f}M"
+    elif value >= 1_000:
+        return f"${value / 1_000:.2f}K"
+    else:
+        return f"${value:,.2f}"
+
+
+def format_change(value):
+    """Format persentase dengan emoji"""
+    if value >= 0:
+        return f"🟢 +{value}%"
+    return f"🔴 {value}%"
+
+
+async def get_global_market() -> dict:
+    url = f"{COINGECKO_BASE_URL}/global"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url, headers=COINGECKO_HEADERS)
+
+            if response.status_code != 200:
+                return {"error": f"CoinGecko API error: {response.status_code}"}
+
+            data = response.json().get("data", {})
+
+            return {
+                "total_market_cap_usd": data.get("total_market_cap", {}).get("usd", 0),
+                "total_volume_24h_usd": data.get("total_volume", {}).get("usd", 0),
+                "btc_dominance": round(data.get("market_cap_percentage", {}).get("btc", 0), 2),
+                "eth_dominance": round(data.get("market_cap_percentage", {}).get("eth", 0), 2),
+                "active_coins": data.get("active_cryptocurrencies", 0),
+                "market_cap_change_24h": round(data.get("market_cap_change_percentage_24h_usd", 0), 2),
+            }
+
+    except httpx.TimeoutException:
+        return {"error": "CoinGecko API timeout."}
+    except Exception as e:
+        return {"error": f"Error: {str(e)}"}
+
+
+async def get_trending_coins() -> dict:
+    url = f"{COINGECKO_BASE_URL}/search/trending"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url, headers=COINGECKO_HEADERS)
+
+            if response.status_code != 200:
+                return {"error": f"CoinGecko API error: {response.status_code}"}
+
+            data = response.json()
+            coins = data.get("coins", [])
+
+            results = []
+            for coin in coins[:10]:
+                item = coin.get("item", {})
+                data_block = item.get("data", {}) or {}
+                price_change_block = data_block.get("price_change_percentage_24h", {}) or {}
+
+                results.append({
+                    "name": item.get("name", "?"),
+                    "symbol": item.get("symbol", "?").upper(),
+                    "market_cap_rank": item.get("market_cap_rank", "N/A"),
+                    "score": item.get("score", 0),
+                    "price_btc": item.get("price_btc", 0),
+                    "price_change_24h": price_change_block.get("usd", 0),
+                    "market_cap": data_block.get("market_cap", "N/A"),
+                    "total_volume": data_block.get("total_volume", "N/A"),
+                })
+
+            return {"trending": results}
+
+    except httpx.TimeoutException:
+        return {"error": "CoinGecko API timeout."}
+    except Exception as e:
+        return {"error": f"Error: {str(e)}"}
+
+
+async def get_top_movers() -> dict:
+    url = f"{COINGECKO_BASE_URL}/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": 100,
+        "page": 1,
+        "sparkline": "false",
+        "price_change_percentage": "1h,24h,7d",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(url, headers=COINGECKO_HEADERS, params=params)
+
+            if response.status_code != 200:
+                return {"error": f"CoinGecko API error: {response.status_code}"}
+
+            data = response.json()
+
+            sorted_data = sorted(
+                data,
+                key=lambda x: x.get("price_change_percentage_24h") or 0,
+                reverse=True
+            )
+
+            top_gainers = []
+            for coin in sorted_data[:5]:
+                top_gainers.append({
+                    "name": coin.get("name", "?"),
+                    "symbol": coin.get("symbol", "?").upper(),
+                    "current_price": coin.get("current_price", 0),
+                    "change_1h": round(coin.get("price_change_percentage_1h_in_currency") or 0, 2),
+                    "change_24h": round(coin.get("price_change_percentage_24h") or 0, 2),
+                    "change_7d": round(coin.get("price_change_percentage_7d_in_currency") or 0, 2),
+                    "volume_24h": coin.get("total_volume", 0),
+                    "market_cap": coin.get("market_cap", 0),
+                    "market_cap_rank": coin.get("market_cap_rank", "N/A"),
+                })
+
+            top_losers = []
+            for coin in sorted_data[-5:]:
+                top_losers.append({
+                    "name": coin.get("name", "?"),
+                    "symbol": coin.get("symbol", "?").upper(),
+                    "current_price": coin.get("current_price", 0),
+                    "change_1h": round(coin.get("price_change_percentage_1h_in_currency") or 0, 2),
+                    "change_24h": round(coin.get("price_change_percentage_24h") or 0, 2),
+                    "change_7d": round(coin.get("price_change_percentage_7d_in_currency") or 0, 2),
+                    "volume_24h": coin.get("total_volume", 0),
+                    "market_cap": coin.get("market_cap", 0),
+                    "market_cap_rank": coin.get("market_cap_rank", "N/A"),
+                })
+
+            return {"gainers": top_gainers, "losers": top_losers}
+
+    except httpx.TimeoutException:
+        return {"error": "CoinGecko API timeout."}
+    except Exception as e:
+        return {"error": f"Error: {str(e)}"}
+
+
+async def get_coin_detail(coin_id: str) -> dict:
+    url = f"{COINGECKO_BASE_URL}/coins/{coin_id.lower()}"
+    params = {
+        "localization": "false",
+        "tickers": "false",
+        "community_data": "false",
+        "developer_data": "false",
+        "sparkline": "false",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url, headers=COINGECKO_HEADERS, params=params)
+
+            if response.status_code == 404:
+                return {"error": f"Coin '{coin_id}' tidak ditemukan."}
+            if response.status_code != 200:
+                return {"error": f"CoinGecko API error: {response.status_code}"}
+
+            data = response.json()
+            market = data.get("market_data", {})
+
+            return {
+                "name": data.get("name", "?"),
+                "symbol": data.get("symbol", "?").upper(),
+                "market_cap_rank": data.get("market_cap_rank", "N/A"),
+                "current_price": market.get("current_price", {}).get("usd", 0),
+                "market_cap": market.get("market_cap", {}).get("usd", 0),
+                "total_volume": market.get("total_volume", {}).get("usd", 0),
+                "high_24h": market.get("high_24h", {}).get("usd", 0),
+                "low_24h": market.get("low_24h", {}).get("usd", 0),
+                "change_24h": round(market.get("price_change_percentage_24h") or 0, 2),
+                "change_7d": round(market.get("price_change_percentage_7d") or 0, 2),
+                "change_30d": round(market.get("price_change_percentage_30d") or 0, 2),
+                "ath": market.get("ath", {}).get("usd", 0),
+                "ath_change": round(market.get("ath_change_percentage", {}).get("usd", 0), 2),
+                "circulating_supply": market.get("circulating_supply", 0),
+                "total_supply": market.get("total_supply", 0),
+                "description": (data.get("description", {}).get("en", "") or "")[:500],
+            }
+
+    except httpx.TimeoutException:
+        return {"error": "CoinGecko API timeout."}
+    except Exception as e:
+        return {"error": f"Error: {str(e)}"}
+
+
+async def get_fear_greed() -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(f"{FEAR_GREED_URL}/?limit=7")
+
+            if response.status_code != 200:
+                return {"error": f"Fear & Greed API error: {response.status_code}"}
+
+            data = response.json().get("data", [])
+
+            if not data:
+                return {"error": "Data Fear & Greed tidak tersedia."}
+
+            current = data[0]
+            yesterday = data[1] if len(data) > 1 else None
+            week_ago = data[6] if len(data) > 6 else None
+
+            result = {
+                "value": int(current.get("value", 0)),
+                "classification": current.get("value_classification", "?"),
+                "timestamp": current.get("timestamp", ""),
+            }
+
+            if yesterday:
+                result["yesterday_value"] = int(yesterday.get("value", 0))
+                result["yesterday_class"] = yesterday.get("value_classification", "?")
+
+            if week_ago:
+                result["week_ago_value"] = int(week_ago.get("value", 0))
+                result["week_ago_class"] = week_ago.get("value_classification", "?")
+
+            return result
+
+    except httpx.TimeoutException:
+        return {"error": "Fear & Greed API timeout."}
+    except Exception as e:
+        return {"error": f"Error: {str(e)}"}
+
+
+async def get_dex_trending() -> dict:
+    url = f"{DEXSCREENER_BASE_URL}/token-boosts/latest"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url)
+
+            if response.status_code != 200:
+                return {"error": f"DexScreener API error: {response.status_code}"}
+
+            data = response.json()
+
+            if not data or not isinstance(data, list):
+                return {"error": "Data DexScreener tidak tersedia."}
+
+            results = []
+            seen = set()
+
+            for token in data[:20]:
+                token_address = token.get("tokenAddress", "")
+                if token_address in seen:
+                    continue
+                seen.add(token_address)
+
+                results.append({
+                    "chain": token.get("chainId", "?"),
+                    "description": token.get("description", ""),
+                    "url": token.get("url", ""),
+                    "token_address": token_address,
+                    "icon": token.get("icon", ""),
+                })
+
+                if len(results) >= 10:
+                    break
+
+            return {"dex_trending": results}
+
+    except httpx.TimeoutException:
+        return {"error": "DexScreener API timeout."}
+    except Exception as e:
+        return {"error": f"Error: {str(e)}"}
+
+
+async def get_full_market_data() -> dict:
+    results = await asyncio.gather(
+        get_global_market(),
+        get_top_movers(),
+        get_trending_coins(),
+        get_fear_greed(),
+        get_dex_trending(),
+        return_exceptions=True,
+    )
+
+    return {
+        "global": results[0] if not isinstance(results[0], Exception) else {"error": str(results[0])},
+        "movers": results[1] if not isinstance(results[1], Exception) else {"error": str(results[1])},
+        "trending": results[2] if not isinstance(results[2], Exception) else {"error": str(results[2])},
+        "fear_greed": results[3] if not isinstance(results[3], Exception) else {"error": str(results[3])},
+        "dex": results[4] if not isinstance(results[4], Exception) else {"error": str(results[4])},
+    }
+
+
+def format_global_result(result: dict) -> str:
+    if "error" in result:
+        return result["error"]
+
+    return (
+        f"🌍 Global Crypto Market:\n\n"
+        f"Market Cap: {format_usd(result.get('total_market_cap_usd', 0))}"
+        f" ({format_change(result.get('market_cap_change_24h', 0))})\n"
+        f"Volume 24h: {format_usd(result.get('total_volume_24h_usd', 0))}\n"
+        f"BTC Dominance: {result.get('btc_dominance', 0)}%\n"
+        f"ETH Dominance: {result.get('eth_dominance', 0)}%\n"
+        f"Active Coins: {result.get('active_coins', 0):,}"
+    )
+
+
+def format_trending_result(result: dict) -> str:
+    if "error" in result:
+        return result["error"]
+
+    coins = result.get("trending", [])
+    if not coins:
+        return "Tidak ada data trending."
+
+    lines = ["🔥 Trending Coins (CoinGecko):\n"]
+
+    for i, coin in enumerate(coins, 1):
+        change = coin.get("price_change_24h", 0)
+        change_str = format_change(round(change, 2)) if change else "N/A"
+        rank = coin.get("market_cap_rank", "N/A")
+
+        lines.append(
+            f"{i}. ${coin['symbol']} ({coin['name']})"
+            f"\n   Rank: #{rank} | 24h: {change_str}"
+        )
+
+    return "\n".join(lines)
+
+
+def format_top_movers_result(result: dict) -> str:
+    if "error" in result:
+        return result["error"]
+
+    lines = []
+
+    gainers = result.get("gainers", [])
+    if gainers:
+        lines.append("📈 Top Gainers (24h):\n")
+        for i, coin in enumerate(gainers, 1):
+            lines.append(
+                f"{i}. ${coin['symbol']} — {format_change(coin['change_24h'])}"
+                f"\n   Price: ${coin['current_price']:,.4f} | Vol: {format_usd(coin['volume_24h'])}"
+            )
+        lines.append("")
+
+    losers = result.get("losers", [])
+    if losers:
+        lines.append("📉 Top Losers (24h):\n")
+        for i, coin in enumerate(losers, 1):
+            lines.append(
+                f"{i}. ${coin['symbol']} — {format_change(coin['change_24h'])}"
+                f"\n   Price: ${coin['current_price']:,.4f} | Vol: {format_usd(coin['volume_24h'])}"
+            )
+
+    return "\n".join(lines)
+
+
+def format_fear_greed_result(result: dict) -> str:
+    if "error" in result:
+        return result["error"]
+
+    value = result["value"]
+
+    if value <= 25:
+        emoji = "😱"
+    elif value <= 45:
+        emoji = "😰"
+    elif value <= 55:
+        emoji = "😐"
+    elif value <= 75:
+        emoji = "😊"
+    else:
+        emoji = "🤑"
+
+    text = f"{emoji} Fear & Greed Index: {value}/100 ({result['classification']})"
+
+    if "yesterday_value" in result:
+        text += f"\nKemarin: {result['yesterday_value']} ({result['yesterday_class']})"
+
+    if "week_ago_value" in result:
+        text += f"\n7 hari lalu: {result['week_ago_value']} ({result['week_ago_class']})"
+
+    return text
+
+
+def format_coin_detail_result(result: dict) -> str:
+    if "error" in result:
+        return result["error"]
+
+    return (
+        f"📊 {result['name']} (${result['symbol']}) — Rank #{result['market_cap_rank']}\n\n"
+        f"Price: ${result['current_price']:,.4f}\n"
+        f"24h: {format_change(result['change_24h'])} | "
+        f"7d: {format_change(result['change_7d'])} | "
+        f"30d: {format_change(result['change_30d'])}\n"
+        f"24h Range: ${result['low_24h']:,.4f} — ${result['high_24h']:,.4f}\n"
+        f"Market Cap: {format_usd(result['market_cap'])}\n"
+        f"Volume 24h: {format_usd(result['total_volume'])}\n"
+        f"ATH: ${result['ath']:,.4f} ({result['ath_change']}% from ATH)\n"
+    )
+
+
+def build_daily_pick_prompt(market_data: dict) -> str:
+    prompt_parts = [
+        "You are a professional crypto analyst. Analyze the following real-time market data and:",
+        "1. Pick the ONE most interesting coin to highlight today",
+        "2. Explain WHY in 2-3 sentences based only on the provided data",
+        "3. Generate a ready-to-post Farcaster cast (max 280 characters)",
+        "4. Suggest the best Farcaster channel: /crypto, /degen, /base, or /alpha",
+        "",
+        "CAST RULES:",
+        "- Use ENGLISH",
+        "- Include $TICKER",
+        "- Include specific data points like % move, price, volume, rank, or sentiment",
+        "- Do NOT predict future price",
+        "- End with NFA/DYOR 🔍",
+        "- Tone: data-driven with a slight casual edge",
+        "",
+        "=== MARKET DATA ===",
+        "",
+    ]
+
+    g = market_data.get("global", {})
+    if "error" not in g:
+        prompt_parts.extend([
+            "GLOBAL MARKET:",
+            f"- Market Cap: {format_usd(g.get('total_market_cap_usd', 0))}",
+            f"- 24h Change: {g.get('market_cap_change_24h', 0)}%",
+            f"- BTC Dominance: {g.get('btc_dominance', 0)}%",
+            f"- ETH Dominance: {g.get('eth_dominance', 0)}%",
+            ""
+        ])
+
+    fg = market_data.get("fear_greed", {})
+    if "error" not in fg:
+        prompt_parts.extend([
+            f"FEAR & GREED: {fg.get('value', '?')}/100 ({fg.get('classification', '?')})",
+            ""
+        ])
+
+    movers = market_data.get("movers", {})
+    if "error" not in movers:
+        gainers = movers.get("gainers", [])
+        if gainers:
+            prompt_parts.append("TOP GAINERS:")
+            for coin in gainers:
+                prompt_parts.append(
+                    f"- ${coin['symbol']}: {coin['change_24h']}% | "
+                    f"Price: ${coin['current_price']} | "
+                    f"Vol: {format_usd(coin['volume_24h'])} | "
+                    f"Rank: #{coin['market_cap_rank']}"
+                )
+            prompt_parts.append("")
+
+    trending = market_data.get("trending", {})
+    if "error" not in trending:
+        coins = trending.get("trending", [])
+        if coins:
+            prompt_parts.append("TRENDING COINS:")
+            for coin in coins[:7]:
+                prompt_parts.append(
+                    f"- ${coin['symbol']} ({coin['name']}): "
+                    f"Rank #{coin['market_cap_rank']} | "
+                    f"24h: {round(coin.get('price_change_24h', 0), 2) if coin.get('price_change_24h') else 'N/A'}%"
+                )
+            prompt_parts.append("")
+
+    prompt_parts.extend([
+        "=== END DATA ===",
+        "",
+        "Respond EXACTLY in this format:",
+        "",
+        "PICK: $SYMBOL (Name)",
+        "WHY: [2-3 sentence analysis]",
+        "CAST: [ready-to-post cast, max 280 chars]",
+        "CHANNEL: [/crypto or /degen or /base or /alpha]"
+    ])
+
+    return "\n".join(prompt_parts)
 
 
 # ============================================

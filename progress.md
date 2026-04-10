@@ -1,694 +1,84 @@
+Berikut summary detail proyek saat ini, disusun agar AI agent berikutnya bisa langsung melanjutkan tanpa salah konteks.
 
+---
 
 # Summary Lengkap Proyek Telegram AI Assistant
 
----
+## 1. Tujuan Proyek
 
-## Tujuan Proyek
-Membangun **AI assistant personal di Telegram** berbasis **Gemini API**, dengan fokus:
+Membangun AI assistant personal di Telegram berbasis Gemini API dengan karakteristik:
+
+- Personal use
+- Hanya 1 user
+- Bahasa default Indonesia
 - Hemat quota
-- Bisa menyimpan percakapan
-- Punya memory bertahap
-- Makin lama makin kontekstual / "pintar"
-- Self-learning
+- Menyimpan percakapan
+- Memiliki memory bertahap
+- Semakin kontekstual dari waktu ke waktu
+- Bisa membaca dokumen
+- Bisa menganalisis gambar
+- Bisa membuat file PDF dan DOCX
+
+Prinsip utama:
+
+- 1 API call per pesan normal
+- Max 2+ hanya jika fitur memang butuh multi-step, misalnya dokumen panjang dengan chunking
+- Local logic dan SQLite dipakai semaksimal mungkin
+- Jangan menambah fitur boros API tanpa alasan jelas
+- Pembahasan dan perubahan dilakukan pelan-pelan, praktis, tidak lompat ke arsitektur besar
 
 ---
 
-## 1. Use Case dan Constraint
+## 2. Constraint Sistem
 
-### Use case
-- Hanya untuk **personal use**
-- Hanya **1 user**
-- Bahasa default: **Bahasa Indonesia**
-- Kalau diminta baru jawab bahasa Inggris
+### Model utama
+- `gemini-3.1-flash-lite-preview`
 
-### Constraint
-- Model: `gemini-3.1-flash-lite-preview`
-- RPM 15, TPM 250K, RPD 500
-- Target **1 API call per pesan**
-- Memory extraction **dititipkan** di call yang sama
-- Storage lokal pakai **SQLite**
+### Quota / limit
+- RPM: 15
+- TPM: 250K
+- RPD: 500
+
+### Prinsip request
+- Chat biasa: 1 API call
+- Tool DeFi TVL: idealnya 2 call, tapi saat ini di-bypass jadi 1 call final karena issue `thought_signature`
+- Dokumen pendek: 1 API call
+- Dokumen panjang: N chunk summaries + 1 final call
+- Analisis gambar: 1 API call
+- Generate PDF/DOCX: 1 API call untuk generate content, lalu file dibuat lokal di Python
 
 ---
 
-## 2. Stack yang Dipakai
+## 3. Stack yang Dipakai
 
-### Bahasa & Library
-- **Python**
-- **python-telegram-bot**
-- **google-genai**
-- **python-dotenv**
-- **SQLite**
+### Bahasa
+- Python
 
-### Config (`.env`)
+### Library utama
+- `python-telegram-bot`
+- `google-genai`
+- `python-dotenv`
+- `sqlite3` bawaan Python
+- `httpx`
+
+### Library dokumen
+- `PyPDF2`
+- `python-docx`
+- `openpyxl`
+- `fpdf2`
+
+### Env variables
+Di `.env`:
+
 - `TELEGRAM_BOT_TOKEN`
 - `GEMINI_API_KEY`
 
 ---
 
-## 3. Struktur Proyek
+## 4. Struktur Proyek
 
-```bash
-telegram-ai-assistant/
-├── .env
-├── app/
-│   ├── bot.py
-│   ├── config.py
-│   ├── gemini.py
-│   ├── database.py
-│   └── memory.py
-└── venv/
-```
+Struktur saat ini:
 
-Database: `/data/assistant.db` (Railway persistent volume)
-
----
-
-## 4. Deployment
-
-### Platform
-- Kode di **GitHub**
-- Deploy otomatis ke **Railway** setiap push
-
-### Alur Update
-```
-edit kode di lokal → push ke GitHub → Railway otomatis redeploy
-```
-
-### Railway
-- Biaya ~$0.01/bulan
-- Persistent volume di `/data`
-
----
-
-## 5. Database — SQLite
-
-### Tabel `conversations`
-```sql
-CREATE TABLE IF NOT EXISTS conversations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    role TEXT NOT NULL,
-    message TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-### Tabel `memories`
-```sql
-CREATE TABLE IF NOT EXISTS memories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    key TEXT NOT NULL,
-    value TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_id, key)
-);
-```
-
----
-
-## 6. File Lengkap
-
-### 6.1 `app/config.py`
-
-```python
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
-```
-
----
-
-### 6.2 `app/database.py`
-
-```python
-import sqlite3
-
-DB_NAME = "/data/assistant.db"
-
-
-def get_connection():
-    conn = sqlite3.connect(DB_NAME)
-    return conn
-
-
-def init_db():
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS conversations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        role TEXT NOT NULL,
-        message TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """)
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS memories (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        key TEXT NOT NULL,
-        value TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, key)
-    )
-    """)
-
-    conn.commit()
-    conn.close()
-
-    print("✅ DB initialized, tabel memories siap")
-
-
-def save_message(user_id, role, message):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    INSERT INTO conversations (user_id, role, message)
-    VALUES (?, ?, ?)
-    """, (str(user_id), role, message))
-
-    conn.commit()
-    conn.close()
-
-
-def get_recent_messages(user_id, limit=20):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    SELECT role, message
-    FROM conversations
-    WHERE user_id = ?
-    ORDER BY id DESC
-    LIMIT ?
-    """, (str(user_id), limit))
-
-    rows = cursor.fetchall()
-    conn.close()
-
-    rows.reverse()
-    return rows
-
-
-def upsert_memory(user_id, key, value):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    INSERT INTO memories (user_id, key, value)
-    VALUES (?, ?, ?)
-    ON CONFLICT(user_id, key)
-    DO UPDATE SET value = excluded.value,
-                  updated_at = CURRENT_TIMESTAMP
-    """, (str(user_id), key, value))
-
-    conn.commit()
-    conn.close()
-
-
-def get_all_memories(user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    SELECT key, value
-    FROM memories
-    WHERE user_id = ?
-    ORDER BY updated_at DESC
-    """, (str(user_id),))
-
-    rows = cursor.fetchall()
-    conn.close()
-
-    return rows
-
-
-def delete_memory(user_id, key):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    DELETE FROM memories
-    WHERE user_id = ? AND key = ?
-    """, (str(user_id), key))
-
-    deleted = cursor.rowcount
-    conn.commit()
-    conn.close()
-
-    return deleted > 0
-```
-
----
-
-### 6.3 `app/memory.py`
-
-```python
-import re
-from app.database import upsert_memory, get_all_memories
-
-
-CORE_CATEGORIES = [
-    "nama_user",
-    "kota_tinggal",
-    "pekerjaan",
-    "hobi",
-    "status",
-    "makanan_favorit",
-    "musik_favorit",
-    "bahasa_preferensi",
-    "gaya_komunikasi",
-]
-
-
-def extract_memory_from_response(user_id, response_text):
-    pattern = r"\[MEMORY\](.*?)\[/MEMORY\]"
-    match = re.search(pattern, response_text, re.DOTALL | re.IGNORECASE)
-
-    if match:
-        memory_block = match.group(1).strip()
-
-        for line in memory_block.split("\n"):
-            line = line.strip()
-            if ":" in line:
-                key, value = line.split(":", 1)
-                key = key.strip().lower().replace(" ", "_")
-                value = value.strip()
-
-                if key and value:
-                    upsert_memory(user_id, key, value)
-                    print(f"Memory saved: {key} = {value}")
-
-        clean_response = re.sub(pattern, "", response_text, flags=re.DOTALL | re.IGNORECASE).strip()
-        return clean_response
-
-    if "MEMORY" in response_text.upper():
-        lines = response_text.split("\n")
-        clean_lines = []
-        inside_memory = False
-
-        for line in lines:
-            upper_line = line.strip().upper()
-
-            if "MEMORY" in upper_line and "/" not in upper_line:
-                inside_memory = True
-                continue
-            elif "MEMORY" in upper_line and "/" in upper_line:
-                inside_memory = False
-                continue
-
-            if inside_memory:
-                line_stripped = line.strip()
-                if ":" in line_stripped:
-                    key, value = line_stripped.split(":", 1)
-                    key = key.strip().lower().replace(" ", "_")
-                    value = value.strip()
-                    if key and value and len(key) < 30:
-                        upsert_memory(user_id, key, value)
-                        print(f"Memory saved (fallback): {key} = {value}")
-            else:
-                clean_lines.append(line)
-
-        return "\n".join(clean_lines).strip()
-
-    return response_text
-
-
-def format_memories_for_prompt(user_id):
-    memories = get_all_memories(user_id)
-
-    if not memories:
-        return ""
-
-    if len(memories) <= 10:
-        lines = ["Berikut adalah hal-hal yang kamu ingat tentang user:"]
-        for key, value in memories:
-            label = key.replace("_", " ").title()
-            lines.append(f"- {label}: {value}")
-        return "\n".join(lines)
-
-    parts = []
-    for key, value in memories:
-        label = key.replace("_", " ")
-        parts.append(f"{label} adalah {value}")
-
-    summary = "Berikut ringkasan tentang user: " + ". ".join(parts) + "."
-
-    return summary
-```
-
----
-
-### 6.4 `app/gemini.py`
-
-```python
-from google import genai
-from app.config import GEMINI_API_KEY, GEMINI_MODEL
-from app.memory import format_memories_for_prompt
-
-client = genai.Client(api_key=GEMINI_API_KEY)
-
-BASE_SYSTEM_PROMPT = """Kamu adalah asisten AI personal yang helpful dan ramah.
-Jawab selalu dalam Bahasa Indonesia kecuali diminta bahasa lain.
-Jawab dengan natural seperti teman ngobrol, tidak kaku.
-Usahakan jawaban ringkas, jelas, dan tidak terlalu panjang kecuali diminta detail.
-Kalau memberi daftar, batasi 3-5 poin saja.
-Gunakan format teks biasa yang rapi untuk Telegram.
-Hindari markdown seperti **bold**, *italic*, atau format aneh lainnya.
-Kalau user meminta informasi real-time, lokasi terdekat, data terbaru, atau hasil pencarian aktual, jelaskan dengan jujur bahwa kamu tidak sedang mengakses internet, GPS, atau Google Maps secara langsung. Berikan saran umum saja."""
-
-MEMORY_EXTRACTION_PROMPT = """
-Kamu juga punya tugas tambahan: ekstrak informasi personal dari pesan user.
-
-Kategori utama yang bisa kamu simpan:
-- nama_user, kota_tinggal, pekerjaan, hobi, status, makanan_favorit, musik_favorit, bahasa_preferensi, gaya_komunikasi
-
-Tapi kamu juga BOLEH membuat kategori baru yang relevan jika menemukan info penting.
-Gunakan format key snake_case.
-
-Aturan:
-- Hanya ekstrak kalau user BENAR-BENAR menyebutkan info tentang dirinya
-- Jangan mengarang atau mengasumsikan
-- Jangan ekstrak dari pertanyaan user (misal "kamu suka apa?" bukan info tentang user)
-- Kalau tidak ada info baru, JANGAN tulis block [MEMORY]
-
-Kalau ada info baru, tambahkan di AKHIR jawabanmu dengan format:
-[MEMORY]
-key: value
-[/MEMORY]
-
-Contoh:
-User: "Aku tinggal di Bandung dan kerja sebagai desainer"
-Jawaban: "Oh keren, Bandung emang enak buat kerja kreatif!"
-[MEMORY]
-kota_tinggal: Bandung
-pekerjaan: desainer
-[/MEMORY]"""
-
-
-def build_system_prompt(user_id):
-    memory_context = format_memories_for_prompt(user_id)
-
-    parts = [BASE_SYSTEM_PROMPT]
-
-    if memory_context:
-        parts.append(memory_context)
-
-    parts.append(MEMORY_EXTRACTION_PROMPT)
-
-    return "\n\n".join(parts)
-
-
-def build_contents_from_history(recent_messages):
-    contents = []
-    for role, message in recent_messages:
-        gemini_role = "user" if role == "user" else "model"
-        contents.append({
-            "role": gemini_role,
-            "parts": [{"text": message}]
-        })
-    return contents
-
-
-async def get_response(user_id, user_message, recent_messages):
-    try:
-        system_prompt = build_system_prompt(user_id)
-
-        contents = build_contents_from_history(recent_messages)
-
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-            config={
-                "system_instruction": system_prompt,
-                "temperature": 0.7,
-                "max_output_tokens": 1500,
-            }
-        )
-
-        if not response.text:
-            print("⚠️ Gemini response kosong")
-            return "Maaf, aku tidak bisa memproses pesanmu. Coba kirim ulang ya."
-
-        return response.text
-
-    except Exception as e:
-        error_msg = str(e).lower()
-        print(f"❌ Gemini error: {e}")
-
-        if "quota" in error_msg or "429" in error_msg or "resource" in error_msg:
-            return "Maaf, quota API aku lagi habis. Coba lagi dalam beberapa menit ya."
-
-        if "timeout" in error_msg or "deadline" in error_msg:
-            return "Maaf, server lagi lambat. Coba lagi sebentar ya."
-
-        if "api key" in error_msg or "401" in error_msg or "403" in error_msg:
-            return "Maaf, ada masalah autentikasi. Hubungi admin."
-
-        if "model" in error_msg or "not found" in error_msg or "404" in error_msg:
-            return "Maaf, model AI sedang tidak tersedia. Coba lagi nanti."
-
-        return "Maaf, aku lagi ada gangguan. Coba lagi nanti ya."
-```
-
----
-
-### 6.5 `app/bot.py`
-
-```python
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-
-from app.config import TELEGRAM_BOT_TOKEN
-from app.gemini import get_response
-from app.database import init_db, save_message, get_recent_messages, get_all_memories, delete_memory
-from app.memory import extract_memory_from_response
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Halo! Aku asisten AI kamu. Langsung aja ngobrol 😊")
-
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    user_message = update.message.text
-
-    save_message(user_id, "user", user_message)
-
-    recent_messages = get_recent_messages(user_id, limit=20)
-
-    await update.message.chat.send_action("typing")
-
-    raw_response = await get_response(user_id, user_message, recent_messages)
-
-    clean_response = extract_memory_from_response(user_id, raw_response)
-
-    save_message(user_id, "assistant", clean_response)
-
-    await update.message.reply_text(clean_response)
-
-
-async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    memories = get_all_memories(user_id)
-
-    if not memories:
-        await update.message.reply_text("Aku belum punya catatan apa-apa tentang kamu.")
-        return
-
-    lines = ["Ini yang aku ingat tentang kamu:\n"]
-    for key, value in memories:
-        label = key.replace("_", " ").title()
-        lines.append(f"- {label}: {value}")
-
-    await update.message.reply_text("\n".join(lines))
-
-
-async def forget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-
-    if not context.args:
-        await update.message.reply_text("Tulis key yang mau dihapus.\nContoh: /forget nama_kucing")
-        return
-
-    key = "_".join(context.args).lower()
-    deleted = delete_memory(user_id, key)
-
-    if deleted:
-        await update.message.reply_text(f"Oke, aku sudah lupa tentang '{key}'.")
-    else:
-        await update.message.reply_text(f"Aku tidak punya catatan '{key}'.")
-
-
-def main():
-    init_db()
-
-    app = (
-        ApplicationBuilder()
-        .token(TELEGRAM_BOT_TOKEN)
-        .connect_timeout(30)
-        .read_timeout(30)
-        .write_timeout(30)
-        .build()
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("memory", memory_command))
-    app.add_handler(CommandHandler("forget", forget_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("🤖 Bot is running...")
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
-```
-
----
-
-## 7. Arsitektur Memory System
-
-### Hybrid: Gemini + Lokal
-
-| Layer | Fungsi | API call? |
-|-------|--------|-----------|
-| Gemini extraction | Ekstrak info dari pesan user, titipkan di 1 API call | Tidak tambahan |
-| `[MEMORY]` block parsing | Parse output Gemini, simpan ke DB | Tidak |
-| Fallback parsing | Kalau format tidak rapi, tetap bisa di-parse | Tidak |
-| Memory injection | Inject memories ke system prompt setiap pesan | Tidak |
-| Memory summary | Kalau >10 memories, ringkas jadi paragraf | Tidak |
-
-### Kategori: Semi-bebas
-- Ada daftar kategori utama sebagai panduan
-- Gemini boleh buat kategori baru yang relevan
-- Key format `snake_case`
-
-### Alur per pesan
-```
-User kirim pesan
-    │
-    ▼
-bot.py: save_message() ke DB
-    │
-    ▼
-bot.py: ambil recent_messages (20) + memories dari DB
-    │
-    ▼
-gemini.py: bangun system prompt dinamis (base + memories + extraction instruction)
-    │
-    ▼
-gemini.py: kirim ke Gemini (1 API call)
-    │
-    ▼
-Gemini jawab + [MEMORY] block (kalau ada info baru)
-    │
-    ▼
-memory.py: parse [MEMORY] block → simpan ke DB → return jawaban bersih
-    │
-    ▼
-bot.py: simpan jawaban bersih ke DB → kirim ke user
-```
-
----
-
-## 8. Commands yang Tersedia
-
-| Command | Fungsi |
-|---------|--------|
-| `/start` | Salam pembuka |
-| `/memory` | Lihat semua memory yang tersimpan |
-| `/forget [key]` | Hapus memory tertentu |
-
----
-
-## 9. Error Handling
-
-| Kondisi | Pesan ke user |
-|---------|---------------|
-| Response kosong | "tidak bisa memproses, coba kirim ulang" |
-| Quota habis (429) | "quota habis, tunggu beberapa menit" |
-| Timeout | "server lambat, coba lagi" |
-| API key salah (401/403) | "masalah autentikasi, hubungi admin" |
-| Model tidak ada (404) | "model tidak tersedia" |
-| Error lain | "ada gangguan, coba lagi nanti" |
-
----
-
-## 10. Status Proyek
-
-### Sudah Jadi
-- ✅ Telegram bot aktif dan polling
-- ✅ Gemini API terhubung
-- ✅ Chat tersimpan di SQLite
-- ✅ Recent history 20 pesan dari DB
-- ✅ Database persisten via Railway Volume
-- ✅ Memory system hybrid (Gemini + lokal parsing)
-- ✅ Semi-bebas kategori (self-learning)
-- ✅ Memory injection ke system prompt
-- ✅ Memory summary untuk hemat token
-- ✅ `[MEMORY]` block tersembunyi dari user
-- ✅ Command `/memory` dan `/forget`
-- ✅ Error handling informatif
-
-### Belum Jadi / Opsi Selanjutnya
-- ❌ Command `/clearmemory` — hapus semua memory sekaligus
-- ❌ Command `/clearhistory` — hapus chat history
-- ❌ Semantic search / vector retrieval
-- ❌ Fallback multi-model (kalau Gemini down, pakai model lain)
-- ❌ Rate limiting per user
-- ❌ Image / voice message handling
-- ❌ Scheduled memory cleanup
-
----
-
-## 11. Prinsip Arsitektur
-
-- Tetap hemat request — **1 API call per user message**
-- Gunakan local logic / SQLite sebanyak mungkin
-- Jangan buru-buru menambah fitur yang boros API
-- Default bahasa Indonesia
-- Pembahasan **pelan-pelan** dan praktis
-- Jangan langsung lempar full code besar
-
-==========================================
-
-# Summary Lengkap Proyek Telegram AI Assistant
-
----
-
-## Tujuan Proyek
-Membangun **AI assistant personal di Telegram** berbasis **Gemini API**, dengan fokus:
-- Hemat quota
-- Bisa menyimpan percakapan
-- Punya memory bertahap
-- Makin lama makin kontekstual / "pintar"
-- Self-learning
-
----
-
-## Stack
-- **Python**, **python-telegram-bot**, **google-genai**, **python-dotenv**, **SQLite**, **httpx**
-- Config: `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`
-- Model: `gemini-3.1-flash-lite-preview`
-- Constraint: RPM 15, TPM 250K, RPD 500, target **1 API call per pesan**
-
----
-
-## Struktur Proyek
 ```bash
 telegram-ai-assistant/
 ├── .env
@@ -703,19 +93,36 @@ telegram-ai-assistant/
 └── venv/
 ```
 
----
+Database SQLite disimpan di Railway persistent volume:
 
-## Deployment
-- Kode di **GitHub**, auto-deploy ke **Railway**
-- Database persisten di Railway Volume `/data/assistant.db`
-- Biaya Railway: free tier 26 hari, setelah itu $5/bulan
-- **Alternatif lebih murah:** Fly.io (free/sangat murah), Oracle Cloud (gratis selamanya), VPS lokal (~Rp 20rb/bulan)
+```bash
+/data/assistant.db
+```
 
 ---
 
-## Database — SQLite
+## 5. Deployment
 
-### Tabel `conversations`
+### Platform
+- Source code di GitHub
+- Deploy otomatis ke Railway setiap push
+
+### Alur deploy
+```text
+edit lokal → git add/commit → push GitHub → Railway auto redeploy
+```
+
+### Storage persisten
+- Railway volume di `/data`
+
+---
+
+## 6. Database Schema
+
+## Tabel `conversations`
+
+Dipakai untuk menyimpan history chat.
+
 ```sql
 CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -726,7 +133,19 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 ```
 
-### Tabel `memories`
+### Kolom
+- `id`: auto increment
+- `user_id`: Telegram user id dalam string
+- `role`: `"user"` atau `"assistant"`
+- `message`: isi pesan
+- `created_at`: timestamp otomatis
+
+---
+
+## Tabel `memories`
+
+Dipakai untuk menyimpan memory/fakta tentang user.
+
 ```sql
 CREATE TABLE IF NOT EXISTS memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -739,188 +158,994 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 ```
 
+### Kolom
+- `id`: auto increment
+- `user_id`: Telegram user id dalam string
+- `key`: nama memory dalam snake_case
+- `value`: isi memory
+- `created_at`
+- `updated_at`
+
+### Constraint
+- `UNIQUE(user_id, key)` agar 1 key per user selalu di-update, bukan diduplikasi
+
 ---
 
-## Commands
+## 7. File dan Fungsinya
+
+# 7.1 `app/config.py`
+
+Fungsi:
+- Load environment variables
+- Menyediakan konstanta model
+
+Isi penting:
+- `TELEGRAM_BOT_TOKEN`
+- `GEMINI_API_KEY`
+- `GEMINI_MODEL = "gemini-3.1-flash-lite-preview"`
+
+---
+
+# 7.2 `app/database.py`
+
+Fungsi utama:
+
+- `get_connection()`
+  - buka koneksi SQLite ke `/data/assistant.db`
+
+- `init_db()`
+  - buat tabel `conversations` dan `memories` jika belum ada
+
+- `save_message(user_id, role, message)`
+  - simpan pesan ke `conversations`
+
+- `get_recent_messages(user_id, limit=20)`
+  - ambil history terbaru
+  - query DESC lalu di-reverse agar urut kronologis
+
+- `upsert_memory(user_id, key, value)`
+  - insert/update memory berdasarkan `(user_id, key)`
+
+- `get_all_memories(user_id)`
+  - ambil semua memories user
+  - urut `updated_at DESC`
+
+- `delete_memory(user_id, key)`
+  - hapus satu memory tertentu
+
+- `clear_history(user_id)`
+  - hapus semua percakapan di tabel `conversations` untuk user itu
+  - dipakai oleh command `/clearhistory`
+
+Catatan:
+- Semua `user_id` disimpan sebagai string
+
+---
+
+# 7.3 `app/memory.py`
+
+Fungsi:
+- Parse memory dari output Gemini
+- Inject memory ke system prompt
+- Ringkas memory jika terlalu banyak
+
+### Variabel penting
+
+#### `CORE_CATEGORIES`
+Daftar kategori utama memory:
+
+```python
+[
+    "nama_user",
+    "kota_tinggal",
+    "pekerjaan",
+    "hobi",
+    "status",
+    "makanan_favorit",
+    "musik_favorit",
+    "bahasa_preferensi",
+    "gaya_komunikasi",
+]
+```
+
+### Fungsi utama
+
+#### `extract_memory_from_response(user_id, response_text)`
+Mencari block:
+
+```text
+[MEMORY]
+key: value
+[/MEMORY]
+```
+
+Lalu:
+- parse per baris
+- ubah key jadi snake_case lowercase
+- simpan ke DB via `upsert_memory`
+- hapus block memory dari jawaban user-visible
+
+Ada fallback parser jika format block tidak rapi.
+
+Return:
+- response bersih tanpa `[MEMORY]`
+
+#### `format_memories_for_prompt(user_id)`
+Mengambil semua memory user dan mengubah jadi konteks prompt.
+
+Aturan:
+- jika tidak ada memory → return string kosong
+- jika <= 10 memory → tampilkan dalam bullet list
+- jika > 10 → ringkas jadi paragraf hemat token
+
+---
+
+# 7.4 `app/tools.py`
+
+File ini sekarang memegang 3 kelompok logic:
+
+1. Tool DeFiLlama
+2. Document reader
+3. Document creator
+4. Chunking utility
+
+---
+
+## Bagian A — DefiLlama Tool
+
+### Konstanta
+- `DEFILLAMA_BASE_URL = "https://api.llama.fi"`
+
+### Fungsi
+
+#### `get_tvl_growth(protocol_name: str) -> dict`
+Async function.
+
+Fungsi:
+- fetch endpoint `https://api.llama.fi/protocol/{protocol_name.lower()}`
+- ambil TVL sekarang
+- cari TVL sekitar 30 hari lalu
+- hitung growth %
+
+Return dict:
+- success:
+  - `protocol`
+  - `current_tvl`
+  - `current_date`
+  - `past_tvl`
+  - `past_date`
+  - `growth_percent`
+- gagal:
+  - `{"error": "..."}`
+  
+#### `format_tvl_result(result: dict) -> str`
+Format hasil TVL agar jadi teks rapi untuk user.
+
+Termasuk:
+- formatting USD ke B / M / raw
+- arrow hijau/merah berdasar growth
+
+---
+
+## Bagian B — Document Reader
+
+### Konstanta penting
+
+#### `CHUNK_SIZE = 8000`
+Ukuran chunk dokumen panjang, dalam karakter.
+
+#### `CHUNK_OVERLAP = 500`
+Overlap antar chunk agar konteks tidak putus.
+
+### Reader functions
+
+#### `read_txt(file_path)`
+- baca file teks
+- fallback encoding `utf-8` lalu `latin-1`
+
+#### `read_pdf(file_path)`
+- pakai `PyPDF2.PdfReader`
+- ekstrak teks semua halaman
+- return string gabungan
+
+#### `read_docx(file_path)`
+- pakai `python-docx`
+- baca paragraf
+- baca tabel juga
+
+#### `read_csv_file(file_path)`
+- baca CSV
+- dibatasi 100 baris
+
+#### `read_json_file(file_path)`
+- load JSON
+- dump pretty string
+- saat ini masih ada limit 5000 chars internal pada JSON
+
+#### `read_xlsx(file_path)`
+- pakai `openpyxl`
+- baca semua sheet
+- dibatasi 100 baris per sheet
+
+### Mapping
+
+#### `DOCUMENT_READERS`
+Mapping ekstensi ke fungsi pembaca:
+
+Support saat ini:
+- `.txt`
+- `.pdf`
+- `.docx`
+- `.csv`
+- `.json`
+- `.xlsx`
+- `.xls`
+- `.log`
+- `.md`
+- `.py`
+- `.js`
+- `.html`
+- `.xml`
+- `.yaml`
+- `.yml`
+- `.env`
+- `.ini`
+- `.cfg`
+- `.sql`
+
+#### `SUPPORTED_EXTENSIONS`
+List dari semua key `DOCUMENT_READERS`
+
+### Utility
+
+#### `split_text_into_chunks(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)`
+Pecah teks panjang menjadi beberapa chunk.
+
+Logika:
+- jika teks <= chunk_size → satu chunk
+- jika lebih panjang → potong di newline terdekat
+- jika tidak ada newline cocok → potong di `. `
+- pakai overlap 500 karakter
+- ada safety agar loop tidak macet
+
+#### `extract_text_from_file(file_path)`
+- deteksi extension
+- panggil reader yang sesuai
+- return `(text, error)`
+- jika unsupported → return `(None, "error message")`
+- jika kosong → return `(None, "Dokumen kosong...")`
+
+Catatan:
+- Tidak ada lagi global max chars limit di sini
+- Dokumen panjang diproses lewat chunking di layer bot/gemini
+
+---
+
+## Bagian C — Document Creator
+
+Dipakai oleh command `/pdf` dan `/docx`.
+
+### Helper
+
+#### `safe_text_for_pdf(text)`
+Membersihkan karakter unicode tertentu agar aman untuk font default PDF (`latin-1`).
+
+#### `parse_title_from_content(content)`
+Mengambil judul dari baris pertama dengan prefix:
+
+```text
+# Judul
+```
+
+Return:
+- `title`
+- `body`
+
+### Creator functions
+
+#### `create_pdf_file(content, file_path)`
+- pakai `fpdf2`
+- buat PDF lokal
+- format sederhana:
+  - title center
+  - timestamp
+  - separator
+  - heading/subheading/list/paragraph
+
+Return:
+- `title`
+
+#### `create_docx_file(content, file_path)`
+- pakai `python-docx`
+- buat DOCX lokal
+- title center
+- timestamp abu-abu
+- heading/list/paragraph
+
+Return:
+- `title`
+
+---
+
+# 7.5 `app/gemini.py`
+
+Ini file inti AI logic.
+
+## Import penting
+- `from google import genai`
+- `from google.genai import types`
+
+## Client
+- `client = genai.Client(api_key=GEMINI_API_KEY)`
+
+---
+
+## Prompt utama
+
+### `BASE_SYSTEM_PROMPT`
+Karakter bot:
+- helpful
+- ramah
+- natural
+- default bahasa Indonesia
+- ringkas kecuali diminta detail
+- hindari markdown aneh
+- jujur kalau tidak punya internet/GPS live
+- punya akses DefiLlama untuk TVL
+- bisa membaca dokumen
+- bisa membantu dari isi dokumen
+
+### `MEMORY_EXTRACTION_PROMPT`
+Instruksi ke model agar:
+- ekstrak info personal user
+- pakai `[MEMORY] ... [/MEMORY]`
+- hanya jika benar-benar ada info baru
+- boleh buat kategori baru
+- key harus snake_case
+
+---
+
+## Tool declaration
+
+### `TVL_TOOL`
+Tool Gemini function calling untuk:
+
+- name: `get_tvl_growth`
+- parameter:
+  - `protocol_name: string`
+
+---
+
+## Fungsi utama
+
+### `build_system_prompt(user_id)`
+Menggabungkan:
+1. `BASE_SYSTEM_PROMPT`
+2. memory context hasil `format_memories_for_prompt(user_id)` jika ada
+3. `MEMORY_EXTRACTION_PROMPT`
+
+Return:
+- string system prompt final
+
+---
+
+### `get_response(user_id, user_message, recent_messages)`
+Fungsi utama chat.
+
+#### Input
+- `user_id`
+- `user_message`
+- `recent_messages`: list `(role, message)`
+
+#### Cara kerja
+1. build system prompt
+2. build `contents` dari recent_messages pakai `types.Content`
+3. call Gemini
+4. cek apakah ada `function_call`
+5. jika tool dipanggil:
+   - ambil `protocol_name`
+   - execute `get_tvl_growth`
+   - format hasil
+   - saat ini masih ada logic Call 2, tetapi historis proyek menyebut fix stabil adalah bypass Call 2
+   - agent berikutnya harus hati-hati di sini karena model ini sensitif terhadap `thought_signature`
+
+#### Catatan sangat penting
+Ada bug / constraint model:
+- `gemini-3.1-flash-lite-preview` sempat error:
+  - `"Function call is missing a thought_signature in functionCall parts"`
+
+Solusi yang paling stabil sebelumnya:
+- bypass call 2
+- setelah tool dieksekusi, return hasil tool langsung tanpa kirim function response lagi ke Gemini
+
+Namun isi `gemini.py` terakhir yang terlihat masih memiliki logic Call 2 dengan attempt menyalin `thought_signature`, plus fallback jika error. Ini area sensitif dan perlu diperlakukan hati-hati kalau diubah lagi.
+
+#### Error handling
+Menangani:
+- quota / 429
+- timeout
+- auth error
+- model not found
+- thought_signature fallback
+
+---
+
+### `summarize_chunk(chunk_text, chunk_number, total_chunks, file_name)`
+Dipakai untuk dokumen panjang.
+
+#### Fungsi
+- kirim 1 chunk ke Gemini
+- minta ringkasan detail
+- menjaga angka/nama/poin penting
+
+#### Output
+- summary text per chunk
+
+---
+
+### `process_long_document(user_id, chunks, file_name, user_caption, recent_messages)`
+Dipakai untuk dokumen panjang.
+
+#### Alur ideal saat ini
+1. loop semua chunk
+2. panggil `summarize_chunk()` per chunk
+3. gabungkan hasil jadi `combined_summary`
+4. bangun `final_prompt` berisi rangkuman semua bagian + instruksi user/caption
+5. kirim ke Gemini untuk jawaban final
+
+#### Catatan bug yang pernah terjadi
+Sempat ada bug:
+- final prompt tidak masuk ke recent_messages
+- Gemini hanya melihat metadata dokumen panjang, bukan summary isi
+
+Fix yang benar:
+- simpan `final_prompt` ke DB sebagai message user
+- ambil ulang `fresh_messages`
+- baru panggil `get_response(...)`
+
+Agent selanjutnya perlu memastikan implementasi final di file benar-benar mengikuti fix ini.
+
+---
+
+### `generate_document_content(user_id, instruction, recent_messages)`
+Dipakai oleh `/pdf` dan `/docx`.
+
+#### Fungsi
+- ambil konteks dari sekitar 10 pesan terakhir
+- buat prompt khusus pembuatan dokumen
+- minta Gemini menulis konten terstruktur dengan format:
+
+```text
+# Judul
+## Subbagian
+### Subsubbagian
+- bullet
+paragraf biasa
+```
+
+#### Aturan prompt
+- jangan pakai bold/italic markdown
+- Bahasa Indonesia
+- lengkap dan informatif
+- minimal sekitar 500 kata
+
+#### Return
+- string content dokumen
+- atau `None` jika gagal
+
+---
+
+### `analyze_image(user_id, image_bytes, caption, recent_messages, mime_type="image/jpeg")`
+Dipakai untuk analisis gambar.
+
+#### Input
+- `user_id`
+- `image_bytes`
+- `caption`
+- `recent_messages`
+- `mime_type`
+
+#### Default mime type
+- `"image/jpeg"`
+
+#### Cara kerja
+- build system prompt
+- buat `types.Part.from_bytes(...)`
+- gabungkan dengan teks prompt/caption
+- kirim ke Gemini
+- return hasil analisis
+
+#### Support nyata
+- foto Telegram biasa
+- file gambar sebagai document:
+  - jpg
+  - jpeg
+  - png
+  - webp
+  - gif
+  - bmp
+
+---
+
+# 7.6 `app/bot.py`
+
+Ini entry point aplikasi Telegram bot.
+
+## Import penting
+
+Dari `app.gemini`:
+- `get_response`
+- `process_long_document`
+- `generate_document_content`
+- `analyze_image`
+
+Dari `app.database`:
+- `init_db`
+- `save_message`
+- `get_recent_messages`
+- `get_all_memories`
+- `delete_memory`
+- `clear_history`
+
+Dari `app.tools`:
+- `extract_text_from_file`
+- `split_text_into_chunks`
+- `SUPPORTED_EXTENSIONS`
+- `CHUNK_SIZE`
+- `create_pdf_file`
+- `create_docx_file`
+
+---
+
+## Konstanta lokal penting
+
+### `IMAGE_EXTENSIONS`
+```python
+{".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+```
+
+### `IMAGE_MIME_MAP`
+```python
+{
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+}
+```
+
+---
+
+## Handler yang ada
+
+### `start(update, context)`
+Reply salam pembuka.
+
+---
+
+### `handle_message(update, context)`
+Flow chat biasa:
+1. ambil `user_id`
+2. ambil `user_message`
+3. save ke DB
+4. ambil recent 20 messages
+5. typing action
+6. panggil `get_response`
+7. parse memory via `extract_memory_from_response`
+8. save jawaban assistant
+9. reply ke user
+
+---
+
+### `handle_photo(update, context)`
+Untuk foto Telegram.
+
+Flow:
+1. ambil foto resolusi tertinggi `update.message.photo[-1]`
+2. ambil caption jika ada
+3. download as bytearray
+4. simpan info "[User mengirim gambar]" ke conversations
+5. ambil recent_messages
+6. panggil `analyze_image(...)`
+7. parse memory
+8. simpan jawaban
+9. reply ke user
+10. jika >4096 chars, split reply
+
+---
+
+### `handle_document(update, context)`
+Menangani:
+- file gambar yang dikirim sebagai document
+- dokumen teks/pdf/docx/dll
+
+#### Flow bagian gambar
+Jika extension termasuk `IMAGE_EXTENSIONS`:
+1. download bytes
+2. tentukan mime type dari `IMAGE_MIME_MAP`
+3. simpan info ke DB
+4. panggil `analyze_image(...)`
+5. simpan dan reply
+
+#### Flow bagian dokumen biasa
+Jika extension termasuk `SUPPORTED_EXTENSIONS`:
+1. download ke `/tmp/{user_id}_{file_name}`
+2. ekstrak teks via `extract_text_from_file`
+3. hapus file temp
+4. jika teks <= `CHUNK_SIZE`
+   - buat `user_message` berisi nama file, caption, isi dokumen
+   - simpan ke DB
+   - panggil `get_response(...)`
+5. jika teks > `CHUNK_SIZE`
+   - split via `split_text_into_chunks`
+   - kirim pesan info progress ke user
+   - simpan metadata dokumen panjang ke DB
+   - ambil recent_messages
+   - panggil `process_long_document(...)`
+6. parse memory
+7. simpan response assistant
+8. reply ke user
+9. split message jika >4096 chars
+
+#### File size limit
+- max 20 MB
+
+---
+
+### `create_document_handler(update, context, doc_type)`
+Dipakai oleh `/pdf` dan `/docx`.
+
+#### Parameter
+- `doc_type`: `"pdf"` atau `"docx"`
+
+#### Flow
+1. cek `context.args`
+2. gabungkan jadi `instruction`
+3. kirim status "sedang membuat dokumen"
+4. ambil recent_messages
+5. panggil `generate_document_content(...)`
+6. simpan file ke `/tmp/{user_id}_document.{doc_type}`
+7. buat file via:
+   - `create_pdf_file(...)`
+   - atau `create_docx_file(...)`
+8. sanitize judul jadi filename
+9. kirim file ke user dengan caption judul
+10. simpan log ke DB:
+   - user: `/{doc_type} ...`
+   - assistant: `[Dokumen PDF/DOCX dibuat: title]`
+11. hapus file temp
+
+---
+
+### `pdf_command(update, context)`
+Wrapper:
+- panggil `create_document_handler(..., "pdf")`
+
+### `docx_command(update, context)`
+Wrapper:
+- panggil `create_document_handler(..., "docx")`
+
+---
+
+### `memory_command(update, context)`
+Menampilkan semua memories.
+
+---
+
+### `forget_command(update, context)`
+Menghapus 1 memory key.
+
+Format:
+```text
+/forget nama_kucing
+```
+
+---
+
+### `clearmemory_command(update, context)`
+Menghapus semua memories user.
+
+Catatan:
+- saat ini implementasi memakai direct SQL delete di dalam bot.py, bukan helper function di database.py
+- ini bisa dirapikan nanti, tapi sekarang berfungsi
+
+---
+
+### `clearhistory_command(update, context)`
+Menghapus semua conversation history user melalui `clear_history(user_id)`.
+
+Efek:
+- percakapan di-reset
+- memory personal tetap ada
+
+---
+
+### `post_init(application)`
+Dipakai untuk register command menu ke Telegram agar saat user mengetik `/`, daftar command muncul.
+
+Command yang diregister:
+- `/start`
+- `/memory`
+- `/forget`
+- `/clearmemory`
+- `/clearhistory`
+- `/pdf`
+- `/docx`
+
+Catatan:
+- jika nanti ada command baru, fungsi ini harus ikut diupdate
+
+---
+
+### `main()`
+Flow:
+1. `init_db()`
+2. build `ApplicationBuilder`
+3. set timeout
+4. set `.post_init(post_init)`
+5. register handlers
+6. `run_polling()`
+
+Urutan handler penting:
+1. command handlers
+2. `filters.PHOTO` → `handle_photo`
+3. `filters.Document.ALL` → `handle_document`
+4. `filters.TEXT & ~filters.COMMAND` → `handle_message`
+
+Urutan ini penting agar foto/file tidak jatuh ke text handler.
+
+---
+
+## 8. Command yang Tersedia
+
+Saat ini command aktif:
+
 | Command | Fungsi |
-|---------|--------|
+|--------|--------|
 | `/start` | Salam pembuka |
 | `/memory` | Lihat semua memory |
 | `/forget [key]` | Hapus 1 memory |
 | `/clearmemory` | Hapus semua memory |
+| `/clearhistory` | Hapus semua percakapan |
+| `/pdf [instruksi]` | Generate file PDF |
+| `/docx [instruksi]` | Generate file DOCX |
+
+Semua command ini sudah dimunculkan di Telegram command menu.
 
 ---
 
-## Arsitektur Memory
-- Gemini ekstrak info dari pesan → `[MEMORY]` block → parse lokal → simpan SQLite
-- Memory di-inject ke system prompt setiap pesan
-- Kalau >10 memories → diringkas jadi paragraf (hemat token)
-- Kategori semi-bebas, Gemini boleh buat key baru (snake_case)
+## 9. Fitur yang Sudah Jadi
 
----
-
-## Tool Calling — DefiLlama
-
-### Prinsip
-- Pakai tool → **2 API call** (call 1: Gemini putuskan tool, call 2: rangkum hasil)
-- Tidak pakai tool → tetap **1 API call**
-
-### Tool: `get_tvl_growth`
-- Input: nama protokol
-- Proses: fetch TVL 30 hari dari DefiLlama public API (gratis, tidak perlu key)
-- Output: TVL sekarang, TVL 30 hari lalu, persentase growth
-- Endpoint: `https://api.llama.fi/protocol/{name}`
-
-### File Baru: `app/tools.py`
-- `get_tvl_growth(protocol_name)` — async, fetch DefiLlama
-- `format_tvl_result(result)` — format output ke teks rapi
-
-### Perubahan `gemini.py`
-- Tambah import `types` dari `google.genai`
-- Tambah import dari `tools.py`
-- Tambah `TVL_TOOL` — definisi tool untuk Gemini
-- `get_response()` — handle tool calling + 2 API call kalau tool dipanggil
-- `BASE_SYSTEM_PROMPT` — tambah info bot punya akses DefiLlama
-
----
-
-## Status Proyek
-
-### Sudah Jadi ✅
-- Telegram bot aktif dan polling
+### Chat & Memory
+- Telegram bot aktif
+- polling aktif
 - Gemini API terhubung
-- Chat tersimpan di SQLite
-- Recent history 20 pesan
-- Database persisten via Railway Volume
-- Memory system hybrid (Gemini + lokal parsing)
-- Semi-bebas kategori (self-learning)
-- Memory injection ke system prompt
-- Memory summary untuk hemat token
-- `[MEMORY]` block tersembunyi dari user
-- Command `/memory`, `/forget`, `/clearmemory`
-- Error handling informatif
-- Tool calling DefiLlama (`get_tvl_growth`) ✅ deployed & sukses
+- recent history 20 pesan
+- memory extraction dari output Gemini
+- memory injection ke system prompt
+- memory summary jika banyak
+- `/memory`, `/forget`, `/clearmemory`
 
-### Belum Jadi ❌
-- `/clearhistory` — hapus chat history
-- Semantic search / vector retrieval
-- Fallback multi-model
-- Rate limiting per user
-- Image / voice message handling
-- Scheduled memory cleanup
-- Tool calling lain selain TVL growth
+### History management
+- `/clearhistory`
 
----
+### Tool calling
+- DefiLlama TVL growth
 
-## Prinsip Arsitektur
-- **1 API call per pesan** (kecuali tool calling, max 2)
-- Gunakan local logic / SQLite sebanyak mungkin
-- Default bahasa Indonesia
-- Jangan buru-buru tambah fitur yang boros API
-- Pembahasan pelan-pelan dan praktis
+### Document understanding
+- baca TXT
+- PDF
+- DOCX
+- CSV
+- JSON
+- XLSX
+- file teks umum
+- dokumen panjang via chunking
 
-===============================
-# 📋 Summary Diskusi Hari Ini
+### Document creation
+- generate PDF
+- generate DOCX
 
----
+### Image understanding
+- foto Telegram
+- file gambar sebagai dokumen
 
-## 🎯 Tujuan
-Memperbaiki error pada Telegram Bot AI yang menggunakan **Gemini 3.1 Flash Lite Preview** dengan fitur **function calling** (tool) untuk mengambil data TVL DeFi dari DefiLlama.
+### UX
+- command menu Telegram muncul saat ketik `/`
 
 ---
 
-## ❌ Masalah Utama
+## 10. Isu / Catatan Teknis Penting
 
-```
-Error 400 INVALID_ARGUMENT:
-"Function call is missing a thought_signature in functionCall parts"
+## A. Thought Signature issue
+Model `gemini-3.1-flash-lite-preview` bermasalah saat function calling multi-step.
+
+Error historis:
+```text
+Function call is missing a thought_signature in functionCall parts
 ```
 
-**Penyebab:** Model `gemini-3.1-flash-lite-preview` mewajibkan `thought_signature` di setiap function call, tapi kode lama mengirim function call response pakai **dict manual** yang tidak membawa `thought_signature`.
+Solusi paling stabil yang pernah berhasil:
+- bypass second call
+- langsung return tool result formatted
+
+Agent berikutnya jangan gegabah merombak tool-calling tanpa ingat issue ini.
 
 ---
 
-## 🔍 Proses Debugging
+## B. Dokumen panjang
+Poin penting:
+- Python tidak merangkum isi, Python hanya memecah chunk
+- Gemini yang merangkum tiap chunk
+- lalu Gemini lagi yang jawab final
 
-| Langkah | File | Temuan |
-|---------|------|--------|
-| 1 | `memory.py` | ✅ Tidak ada masalah |
-| 2 | `tools.py` | ✅ Tidak ada masalah, logic DeFiLlama oke |
-| 3 | `bot.py` | ✅ Tidak ada masalah, alur Telegram handler benar |
-| 4 | `gemini.py` | ❌ **Masalah di sini** — Call 2 kirim dict manual tanpa thought_signature |
-| 5 | `config.py` | Model: `gemini-3.1-flash-lite-preview` (wajib thinking mode) |
-
----
-
-## 🛠️ Solusi yang Dicoba
-
-| Percobaan | Hasil |
-|-----------|-------|
-| 1. Pakai `candidate.content` + `thinking_budget=0` | ❌ Masih error |
-| 2. Pakai `candidate.content` + copy `thought_signature` | ❌ Masih error |
-| 3. **Bypass Call 2 — return hasil tool langsung** | ✅ **BERHASIL** |
+Fix penting:
+- final summary harus benar-benar masuk ke prompt yang dibaca Gemini
 
 ---
 
-## ✅ Fix Final
+## C. JSON reader masih membatasi 5000 chars
+Di `read_json_file`, masih ada limit internal 5000 karakter.
+Kalau nanti ingin full-chunking juga untuk JSON besar, ini perlu dirapikan.
 
-**Strategi: Bypass Call 2**
+---
 
+## D. `/clearmemory` belum dipindah ke database helper
+Masih delete SQL langsung di bot.py. Secara fungsi aman, tapi belum se-rapi `/clearhistory`.
+
+---
+
+## E. Image support bergantung model
+Saat ini diasumsikan model support multimodal untuk image input. Implementasi sudah terbukti berjalan dari hasil test user.
+
+---
+
+## 11. Requirements yang Dipakai
+
+`requirements.txt` seharusnya minimal memuat:
+
+```txt
+python-telegram-bot
+google-genai
+python-dotenv
+httpx
+PyPDF2
+python-docx
+openpyxl
+fpdf2
 ```
-SEBELUM (error):
-Call 1 → Gemini mau panggil tool
-Call 2 → Kirim result ke Gemini → ❌ thought_signature error
 
-SESUDAH (fix):
-Call 1 → Gemini mau panggil tool
-       → Eksekusi tool
-       → Return formatted_result langsung ✅
-       → SKIP Call 2
+Kalau ada error module not found, cek apakah library sudah benar-benar ada di file ini lalu redeploy Railway.
+
+---
+
+## 12. Alur Sistem per Jenis Input
+
+## A. Chat biasa
+```text
+User kirim teks
+→ save_message(user)
+→ get_recent_messages(20)
+→ get_response()
+→ extract_memory_from_response()
+→ save_message(assistant)
+→ reply
+```
+
+## B. Dokumen pendek
+```text
+User kirim dokumen
+→ download tmp
+→ extract_text_from_file()
+→ save_message(user, isi dokumen)
+→ get_recent_messages(20)
+→ get_response()
+→ extract_memory_from_response()
+→ save_message(assistant)
+→ reply
+```
+
+## C. Dokumen panjang
+```text
+User kirim dokumen panjang
+→ download tmp
+→ extract_text_from_file()
+→ split_text_into_chunks()
+→ summarize_chunk() x N
+→ gabung summaries
+→ final prompt
+→ get_response()
+→ extract_memory_from_response()
+→ save_message(assistant)
+→ reply
+```
+
+## D. Gambar
+```text
+User kirim foto / file gambar
+→ download bytes
+→ analyze_image()
+→ extract_memory_from_response()
+→ save_message(assistant)
+→ reply
+```
+
+## E. Generate PDF/DOCX
+```text
+User kirim /pdf atau /docx + instruksi
+→ get_recent_messages()
+→ generate_document_content()
+→ create_pdf_file() / create_docx_file()
+→ kirim file ke user
+→ save log ke DB
 ```
 
 ---
 
-## 📁 File yang Diubah
+## 13. State Proyek Saat Ini
 
-```
-app/gemini.py  ← Satu-satunya file yang diedit
-```
+Sudah jadi:
+- chat
+- memory
+- clear memory
+- clear history
+- Defi TVL tool
+- baca dokumen
+- chunking dokumen panjang
+- generate PDF/DOCX
+- analisis gambar
+- command menu Telegram
 
-**Perubahan utama:**
-1. `build_contents_from_history` → pakai `types.Content` bukan dict
-2. Loop semua `parts` untuk cari function_call (bukan cuma `parts[0]`)
-3. Bypass Call 2 → langsung return `formatted_result`
-4. Hapus pengiriman dict manual yang menyebabkan error
-
----
-
-## 🤖 Status Bot Sekarang
-
-```
-✅ Chat biasa                → Gemini 3.1 Flash Lite Preview
-✅ Memory system             → Ingat nama, hobi, info personal user
-✅ Tool calling (TVL)        → Data real-time dari DefiLlama
-✅ Error handling            → Fallback message yang ramah
-✅ Deploy di Railway         → Auto deploy dari GitHub
-```
-
----
-
-## 💡 Ide Fitur Selanjutnya (Belum Diimplementasi)
-
-```
-🔲 top_tvl_growth       → 10 token kenaikan TVL tertinggi
-🔲 top_tvl_consistent   → Token TVL naik konsisten mingguan
-🔲 compare_tvl          → Bandingin TVL antar protokol
-🔲 tvl_ranking          → Top 10 protokol TVL terbesar
-```
+Belum jadi:
+- web search
+- voice note / speech-to-text
+- semantic retrieval / vector DB
+- rate limiting khusus
+- image generation
+- scheduled cleanup
+- multi-model fallback
+- clear all helper yang lebih rapi di database layer
+- tool DeFi tambahan selain TVL growth
 
 ---
 
-## 📌 Catatan Penting
+## 14. Prinsip yang Harus Dipertahankan oleh AI Agent Selanjutnya
 
-> Model `gemini-3.1-flash-lite-preview` punya **bug/requirement baru** soal `thought_signature` yang bikin Call 2 (function response) sulit dilakukan. Solusi bypass Call 2 adalah yang paling **stabil dan aman** untuk saat ini.
+1. Jangan rusak alur 1 API call untuk chat biasa
+2. Gunakan SQLite dan local logic sebisa mungkin
+3. Jangan menambah fitur berat tanpa mempertimbangkan quota
+4. Bahasa default tetap Indonesia
+5. Jangan langsung rewrite besar-besaran
+6. Selalu perhatikan kompatibilitas dengan Railway
+7. Hati-hati mengubah tool calling Gemini karena ada riwayat bug `thought_signature`
+8. Kalau menambah command baru, update juga Telegram command menu di `post_init`
+9. Kalau menambah file parsing baru, pikirkan:
+   - ukuran file
+   - ukuran token
+   - apakah perlu chunking
+10. Setiap perubahan lebih aman dilakukan incremental dan diuji satu per satu
 
 ---
 
+## 15. Rekomendasi Immediate Next Step
 
+Kalau agent berikutnya melanjutkan, urutan aman yang direkomendasikan:
+
+1. Audit final code di `gemini.py` untuk memastikan `process_long_document()` sudah memakai fix final prompt yang benar
+2. Rapikan `/clearmemory` ke helper database
+3. Tambah `/help`
+4. Besok lanjut web search dengan desain hemat quota
+5. Baru setelah itu pertimbangkan voice note atau tools lain
+
+---
+
+Kalau kamu mau, saya juga bisa buatkan versi kedua dari summary ini yang lebih "operasional", yaitu format:
+- file per file
+- function per function
+- checklist perubahan terakhir
+- known bugs
+- next task recommendation
+
+Versi itu biasanya lebih enak langsung ditempel ke agent AI berikutnya.

@@ -6,10 +6,22 @@ from app.config import TELEGRAM_BOT_TOKEN
 from app.gemini import get_response, process_long_document, generate_document_content, analyze_image
 from app.database import init_db, save_message, get_recent_messages, get_all_memories, delete_memory, clear_history
 from app.memory import extract_memory_from_response
+
 from app.tools import (
     extract_text_from_file, split_text_into_chunks,
     SUPPORTED_EXTENSIONS, CHUNK_SIZE,
     create_pdf_file, create_docx_file,
+
+    # TVL
+    get_tvl_growth, format_tvl_result,
+
+    # Crypto market
+    get_global_market, format_global_result,
+    get_trending_coins, format_trending_result,
+    get_top_movers, format_top_movers_result,
+    get_fear_greed, format_fear_greed_result,
+    get_coin_detail, format_coin_detail_result,
+    get_full_market_data, build_daily_pick_prompt,
 )
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
@@ -285,6 +297,161 @@ async def docx_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================
+# CRYPTO COMMANDS
+# ============================================
+
+async def market_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.chat.send_action("typing")
+
+    try:
+        global_result = await get_global_market()
+        fear_result = await get_fear_greed()
+
+        text_parts = [
+            format_global_result(global_result),
+            format_fear_greed_result(fear_result),
+        ]
+
+        await update.message.reply_text("\n\n".join(text_parts))
+
+    except Exception as e:
+        print(f"❌ Error /market: {e}")
+        await update.message.reply_text("Maaf, gagal mengambil data market.")
+
+
+async def trending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.chat.send_action("typing")
+
+    try:
+        result = await get_trending_coins()
+        await update.message.reply_text(format_trending_result(result))
+    except Exception as e:
+        print(f"❌ Error /trending: {e}")
+        await update.message.reply_text("Maaf, gagal mengambil data trending.")
+
+
+async def movers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.chat.send_action("typing")
+
+    try:
+        result = await get_top_movers()
+        await update.message.reply_text(format_top_movers_result(result))
+    except Exception as e:
+        print(f"❌ Error /movers: {e}")
+        await update.message.reply_text("Maaf, gagal mengambil data movers.")
+
+
+async def fear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.chat.send_action("typing")
+
+    try:
+        result = await get_fear_greed()
+        await update.message.reply_text(format_fear_greed_result(result))
+    except Exception as e:
+        print(f"❌ Error /fear: {e}")
+        await update.message.reply_text("Maaf, gagal mengambil Fear & Greed Index.")
+
+
+async def tvl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Tulis nama protokol.\n\nContoh:\n"
+            "/tvl aave\n"
+            "/tvl lido\n"
+            "/tvl uniswap"
+        )
+        return
+
+    protocol_name = " ".join(context.args)
+    await update.message.chat.send_action("typing")
+
+    try:
+        result = await get_tvl_growth(protocol_name)
+        await update.message.reply_text(format_tvl_result(result))
+    except Exception as e:
+        print(f"❌ Error /tvl: {e}")
+        await update.message.reply_text("Maaf, gagal mengambil data TVL.")
+
+
+async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+
+    if not context.args:
+        await update.message.reply_text(
+            "Tulis coin id dari CoinGecko.\n\nContoh:\n"
+            "/analyze bitcoin\n"
+            "/analyze ethereum\n"
+            "/analyze solana"
+        )
+        return
+
+    coin_id = context.args[0].lower()
+    await update.message.chat.send_action("typing")
+
+    try:
+        result = await get_coin_detail(coin_id)
+
+        if "error" in result:
+            await update.message.reply_text(result["error"])
+            return
+
+        basic_text = format_coin_detail_result(result)
+        await update.message.reply_text(basic_text)
+
+        await update.message.chat.send_action("typing")
+
+        prompt = (
+            "You are a crypto analyst.\n"
+            "Based only on the data below, write:\n"
+            "1. A short analysis in 2-3 sentences\n"
+            "2. A Farcaster-ready post in English, max 280 characters\n"
+            "Rules: include $TICKER, mention specific data, no price prediction, end with NFA/DYOR 🔍\n\n"
+            f"{basic_text}"
+        )
+
+        save_message(user_id, "user", f"/analyze {coin_id}")
+        recent_messages = get_recent_messages(user_id, limit=5)
+
+        raw_response = await get_response(user_id, prompt, recent_messages)
+        clean_response = extract_memory_from_response(user_id, raw_response)
+        save_message(user_id, "assistant", clean_response)
+
+        await update.message.reply_text(f"🤖 AI Analysis:\n\n{clean_response}")
+
+    except Exception as e:
+        print(f"❌ Error /analyze: {e}")
+        await update.message.reply_text("Maaf, gagal menganalisis coin.")
+
+
+async def daily_pick_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+
+    await update.message.reply_text("⏳ Mengambil data market...")
+    await update.message.chat.send_action("typing")
+
+    try:
+        market_data = await get_full_market_data()
+
+        await update.message.reply_text("🤖 Menganalisa dan memilih 1 top crypto...")
+        await update.message.chat.send_action("typing")
+
+        prompt = build_daily_pick_prompt(market_data)
+
+        save_message(user_id, "user", "/daily_pick")
+        recent_messages = get_recent_messages(user_id, limit=5)
+
+        raw_response = await get_response(user_id, prompt, recent_messages)
+        clean_response = extract_memory_from_response(user_id, raw_response)
+        save_message(user_id, "assistant", clean_response)
+
+        await update.message.reply_text(f"📊 Daily Pick:\n\n{clean_response}")
+
+    except Exception as e:
+        print(f"❌ Error /daily_pick: {e}")
+        await update.message.reply_text("Maaf, gagal membuat daily pick.")
+
+
+# ============================================
 # MEMORY COMMANDS
 # ============================================
 
@@ -384,7 +551,19 @@ def main():
     )
 
     # Commands
+    # Commands
     app.add_handler(CommandHandler("start", start))
+
+    # Crypto commands
+    app.add_handler(CommandHandler("daily_pick", daily_pick_command))
+    app.add_handler(CommandHandler("market", market_command))
+    app.add_handler(CommandHandler("trending", trending_command))
+    app.add_handler(CommandHandler("movers", movers_command))
+    app.add_handler(CommandHandler("fear", fear_command))
+    app.add_handler(CommandHandler("tvl", tvl_command))
+    app.add_handler(CommandHandler("analyze", analyze_command))
+
+    # Memory & document commands
     app.add_handler(CommandHandler("memory", memory_command))
     app.add_handler(CommandHandler("forget", forget_command))
     app.add_handler(CommandHandler("clearmemory", clearmemory_command))
