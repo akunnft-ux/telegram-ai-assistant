@@ -81,6 +81,14 @@ async def get_response(user_id, user_message, recent_messages):
                     parts=[types.Part(text=message)]
                 )
             )
+            
+        # Selalu tambahkan user_message sebagai turn terakhir
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[types.Part(text=user_message)]
+                )
+            )
 
         # Call 1: Gemini putuskan pakai tool atau tidak
         response = client.models.generate_content(
