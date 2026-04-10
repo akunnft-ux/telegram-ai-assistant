@@ -71,7 +71,6 @@ async def get_response(user_id, user_message, recent_messages):
     try:
         system_prompt = build_system_prompt(user_id)
 
-        # Bangun contents pakai types.Content
         contents = []
         for role, message in recent_messages:
             gemini_role = "user" if role == "user" else "model"
@@ -81,16 +80,14 @@ async def get_response(user_id, user_message, recent_messages):
                     parts=[types.Part(text=message)]
                 )
             )
-            
-        # Selalu tambahkan user_message sebagai turn terakhir
+
         contents.append(
             types.Content(
                 role="user",
                 parts=[types.Part(text=user_message)]
-                )
             )
+        )
 
-        # Call 1: Gemini putuskan pakai tool atau tidak
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=contents,
@@ -104,7 +101,6 @@ async def get_response(user_id, user_message, recent_messages):
 
         candidate = response.candidates[0]
 
-        # Cari function_call di semua parts
         function_call_part = None
         for part in candidate.content.parts:
             if hasattr(part, "function_call") and part.function_call:
@@ -117,14 +113,11 @@ async def get_response(user_id, user_message, recent_messages):
 
             print(f"🔧 Tool dipanggil: get_tvl_growth({protocol_name})")
 
-            # Eksekusi tool
             tool_result = await get_tvl_growth(protocol_name)
             formatted_result = format_tvl_result(tool_result)
 
-            # ✅ Pakai candidate.content ASLI (bawa thought_signature)
             contents.append(candidate.content)
 
-            # ✅ Bangun function response dengan thought_signature dari part asli
             function_response_parts = []
             for part in candidate.content.parts:
                 if hasattr(part, "function_call") and part.function_call:
@@ -134,7 +127,6 @@ async def get_response(user_id, user_message, recent_messages):
                             response={"result": formatted_result}
                         ),
                     )
-                    # Salin thought_signature jika ada
                     if hasattr(part, "thought_signature") and part.thought_signature:
                         fr_part.thought_signature = part.thought_signature
                     function_response_parts.append(fr_part)
@@ -147,7 +139,6 @@ async def get_response(user_id, user_message, recent_messages):
                     )
                 )
 
-            # Call 2: Gemini rangkum hasil tool
             response2 = client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=contents,
@@ -161,7 +152,6 @@ async def get_response(user_id, user_message, recent_messages):
 
             return response2.text if response2.text else formatted_result
 
-        # Tidak pakai tool
         if not response.text:
             print("⚠️ Gemini response kosong")
             return "Maaf, aku tidak bisa memproses pesanmu. Coba kirim ulang ya."
@@ -173,10 +163,8 @@ async def get_response(user_id, user_message, recent_messages):
         print(f"❌ Gemini error: {e}")
 
         if "thought_signature" in error_msg:
-            # Fallback: kalau masih error thought_signature, langsung return hasil tool
             print("⚠️ Thought signature error, using direct tool result")
             try:
-                # Coba return formatted_result yang sudah ada
                 return formatted_result
             except:
                 pass
@@ -191,6 +179,122 @@ async def get_response(user_id, user_message, recent_messages):
             return "Maaf, model AI sedang tidak tersedia. Coba lagi nanti."
 
         return "Maaf, aku lagi ada gangguan. Coba lagi nanti ya."
+
+
+# ============================================
+# FARCASTER POST GENERATOR
+# ============================================
+
+FARCASTER_POST_PROMPT = """You are a sharp, honest crypto analyst who posts on Farcaster.
+Your audience is crypto-native people who hate generic bot posts and shill content.
+They value original thinking, honest takes, and specific data.
+
+ANALYSIS RULES — apply these BEFORE writing:
+- If 24h volume / market cap ratio > 2x → flag as suspicious (possible wash trading or manipulation)
+- If coin is >80% below ATH → be cautious, frame as high-risk, don't spin it as "opportunity"
+- If 24h change > +100% → question sustainability, look for pump-and-dump signals
+- If 24h change is very negative but 7d/30d is positive → note the divergence, could be healthy pullback or trend reversal
+- If 24h change is positive but 7d/30d is negative → likely dead cat bounce, be skeptical
+- If market cap is very small (<\$10M) with huge volume → extra caution, likely manipulation
+- Always consider: is this data telling a COHERENT story or are there contradictions?
+
+WRITING RULES:
+- Write exactly ONE post, ready to copy-paste to Farcaster
+- No labels, headers, or prefixes like "Analysis:" or "Post:" — just the post itself
+- Do NOT wrap the post in quotation marks
+- Max 900 characters (Farcaster limit is 1024, leave room for safety)
+- Include $TICKER with dollar sign
+- Sound like a thoughtful human, NOT a bot — vary your sentence structure
+- Be specific — use actual numbers from the data
+- Have a clear stance: bullish, bearish, cautious, or worth-watching
+- Tone: curious, analytical, honest. NEVER hype or shill
+- Don't start with generic openers like "$X is exploding!" or "$X alert!"
+- Start with an interesting observation, question, or pattern you noticed
+- End with NFA/DYOR 🔍
+- Write in English"""
+
+
+async def generate_farcaster_post(data_text, post_type="daily_pick"):
+    """Generate 1 Farcaster-ready post — 1 API call, no chat context"""
+    try:
+        if post_type == "daily_pick":
+            user_prompt = f"""Here is today's market data. Pick the most interesting coin and write a post about it.
+"Most interesting" does NOT mean "highest gainer" — it means the coin with the most compelling or unusual data story.
+
+DATA:
+{data_text}
+
+Write the post now:"""
+
+        elif post_type == "analyze":
+            user_prompt = f"""Here is the data for this coin. Analyze it critically and write a Farcaster post.
+
+DATA:
+{data_text}
+
+Write the post now:"""
+
+        else:
+            user_prompt = f"""Based on the data below, write a Farcaster post.
+
+DATA:
+{data_text}
+
+Write the post now:"""
+
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[{"role": "user", "parts": [{"text": user_prompt}]}],
+            config=types.GenerateContentConfig(
+                system_instruction=FARCASTER_POST_PROMPT,
+                temperature=0.85,
+                max_output_tokens=400,
+            )
+        )
+
+        if response.text:
+            text = response.text.strip()
+
+            # Bersihkan kalau Gemini wrap dalam quotes
+            if text.startswith('"') and text.endswith('"'):
+                text = text[1:-1].strip()
+            if text.startswith("'") and text.endswith("'"):
+                text = text[1:-1].strip()
+
+            # Hapus label yang kadang muncul
+            unwanted_prefixes = [
+                "Farcaster Post:", "Farcaster post:",
+                "Post:", "post:",
+                "Draft:", "draft:",
+                "Here's the post:", "Here is the post:",
+            ]
+            for prefix in unwanted_prefixes:
+                if text.startswith(prefix):
+                    text = text[len(prefix):].strip()
+
+            # Pastikan ada NFA/DYOR di akhir
+            if "NFA" not in text and "DYOR" not in text:
+                text += "\n\nNFA/DYOR 🔍"
+
+            # Safety: potong kalau kepanjangan
+            if len(text) > 1000:
+                # Potong di kalimat terakhir yang muat
+                cut = text[:950].rsplit(". ", 1)[0]
+                text = cut + ".\n\nNFA/DYOR 🔍"
+
+            return text
+
+        print("⚠️ Farcaster post: Gemini response kosong")
+        return None
+
+    except Exception as e:
+        error_msg = str(e).lower()
+        print(f"❌ Error generate farcaster post: {e}")
+
+        if "quota" in error_msg or "429" in error_msg:
+            return "⚠️ Quota API habis. Coba lagi nanti."
+
+        return None
 
 
 async def summarize_chunk(chunk_text, chunk_number, total_chunks, file_name):
@@ -229,7 +333,6 @@ async def process_long_document(user_id, chunks, file_name, user_caption, recent
     try:
         print(f"📄 Processing {len(chunks)} chunks for {file_name}")
 
-        # Step 1: Rangkum setiap chunk
         summaries = []
         for i, chunk in enumerate(chunks, 1):
             print(f"  📝 Summarizing chunk {i}/{len(chunks)}...")
@@ -238,7 +341,6 @@ async def process_long_document(user_id, chunks, file_name, user_caption, recent
 
         combined_summary = "\n\n".join(summaries)
 
-        # Step 2: Bangun final prompt
         if user_caption:
             final_prompt = f"""Berikut adalah rangkuman dari dokumen "{file_name}" yang dikirim user:
 
@@ -254,14 +356,11 @@ Jawab sesuai permintaan user berdasarkan isi dokumen di atas."""
 
 Tolong berikan rangkuman lengkap dan poin-poin penting dari dokumen ini."""
 
-        # Step 3: Simpan final_prompt ke DB agar masuk recent_messages
         from app.database import save_message, get_recent_messages
         save_message(user_id, "user", final_prompt)
 
-        # Step 4: Ambil recent_messages BARU (sudah termasuk final_prompt)
         fresh_messages = get_recent_messages(user_id, limit=20)
 
-        # Step 5: Kirim ke Gemini — sekarang Gemini bisa baca summary-nya
         raw_response = await get_response(user_id, final_prompt, fresh_messages)
 
         print(f"  ✅ Document processing done. Total API calls: {len(chunks) + 1}")
@@ -275,7 +374,6 @@ Tolong berikan rangkuman lengkap dan poin-poin penting dari dokumen ini."""
 async def generate_document_content(user_id, instruction, recent_messages):
     """Generate konten terstruktur untuk dokumen PDF/DOCX"""
     try:
-        # Bangun konteks dari percakapan terakhir
         context_lines = []
         for role, message in recent_messages[-10:]:
             speaker = "User" if role == "user" else "Asisten"
@@ -319,6 +417,7 @@ Format yang WAJIB diikuti:
     except Exception as e:
         print(f"❌ Error generate document content: {e}")
         return None
+
 
 async def analyze_image(user_id, image_bytes, caption, recent_messages, mime_type="image/jpeg"):
     """Analisis gambar yang dikirim user — 1 API call"""

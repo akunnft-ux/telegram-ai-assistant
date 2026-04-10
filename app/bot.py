@@ -3,7 +3,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 from app.config import TELEGRAM_BOT_TOKEN
-from app.gemini import get_response, process_long_document, generate_document_content, analyze_image
+from app.gemini import get_response, process_long_document, generate_document_content, analyze_image, generate_farcaster_post
 from app.database import init_db, save_message, get_recent_messages, get_all_memories, delete_memory, clear_history
 from app.memory import extract_memory_from_response
 
@@ -56,7 +56,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================
-# PHOTO HANDLER (kirim sebagai foto)
+# PHOTO HANDLER
 # ============================================
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -93,7 +93,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================
-# DOCUMENT HANDLER (file dokumen + gambar sebagai file)
+# DOCUMENT HANDLER
 # ============================================
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -113,7 +113,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, ext = os.path.splitext(file_name)
     ext = ext.lower()
 
-    # --- Kalau file gambar, analisis pakai Gemini ---
     if ext in IMAGE_EXTENSIONS:
         await update.message.chat.send_action("typing")
 
@@ -146,7 +145,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Maaf, gagal menganalisis gambar. Coba kirim ulang ya.")
             return
 
-    # --- Kalau bukan gambar, proses sebagai dokumen teks ---
     if ext not in SUPPORTED_EXTENSIONS:
         supported = ", ".join(SUPPORTED_EXTENSIONS)
         await update.message.reply_text(
@@ -395,28 +393,21 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(result["error"])
             return
 
+        # Kirim data mentah dulu ke user
         basic_text = format_coin_detail_result(result)
-        await update.message.reply_text(basic_text)
+        await update.message.reply_text(f"📊 Data:\n\n{basic_text}")
 
+        # Generate Farcaster post
         await update.message.chat.send_action("typing")
 
-        prompt = (
-            "You are a crypto analyst.\n"
-            "Based only on the data below, write:\n"
-            "1. A short analysis in 2-3 sentences\n"
-            "2. A Farcaster-ready post in English, max 280 characters\n"
-            "Rules: include $TICKER, mention specific data, no price prediction, end with NFA/DYOR 🔍\n\n"
-            f"{basic_text}"
-        )
+        post = await generate_farcaster_post(basic_text, "analyze")
 
-        save_message(user_id, "user", f"/analyze {coin_id}")
-        recent_messages = get_recent_messages(user_id, limit=5)
-
-        raw_response = await get_response(user_id, prompt, recent_messages)
-        clean_response = extract_memory_from_response(user_id, raw_response)
-        save_message(user_id, "assistant", clean_response)
-
-        await update.message.reply_text(f"🤖 AI Analysis:\n\n{clean_response}")
+        if post:
+            save_message(user_id, "user", f"/analyze {coin_id}")
+            save_message(user_id, "assistant", post)
+            await update.message.reply_text(f"✍️ Draft Farcaster Post:\n\n{post}")
+        else:
+            await update.message.reply_text("Gagal generate post. Coba lagi ya.")
 
     except Exception as e:
         print(f"❌ Error /analyze: {e}")
@@ -433,29 +424,31 @@ async def daily_pick_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         market_data = await get_full_market_data()
+        data_text = build_daily_pick_prompt(market_data)
 
         await update.message.reply_text("🤖 Menganalisa dan memilih 1 top crypto...")
         await update.message.chat.send_action("typing")
 
-        prompt = build_daily_pick_prompt(market_data)
+        # Generate Farcaster post — isolated, no chat context
+        post = await generate_farcaster_post(data_text, "daily_pick")
 
-        # Isolasi dari chat history — jangan bawa konteks tidak relevan
-        raw_response = await get_response(user_id, prompt, recent_messages=[])
-        clean_response = extract_memory_from_response(user_id, raw_response)
+        if post:
+            save_message(user_id, "user", "/daily_pick")
+            save_message(user_id, "assistant", post)
 
-        save_message(user_id, "user", "/daily_pick")
-        save_message(user_id, "assistant", clean_response)
-
-        full_text = f"📊 Daily Pick:\n\n{clean_response}"
-        if len(full_text) > 4096:
-            for i in range(0, len(full_text), 4096):
-                await update.message.reply_text(full_text[i:i + 4096])
+            full_text = f"📊 Daily Pick:\n\n{post}"
+            if len(full_text) > 4096:
+                for i in range(0, len(full_text), 4096):
+                    await update.message.reply_text(full_text[i:i + 4096])
+            else:
+                await update.message.reply_text(full_text)
         else:
-            await update.message.reply_text(full_text)
+            await update.message.reply_text("Gagal generate daily pick. Coba lagi ya.")
 
     except Exception as e:
         print(f"❌ Error /daily_pick: {e}")
         await update.message.reply_text("Maaf, gagal membuat daily pick.")
+
 
 # ============================================
 # MEMORY COMMANDS
@@ -520,8 +513,8 @@ async def clearhistory_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"Done. {deleted} pesan dihapus. Percakapan dimulai dari awal, tapi aku masih ingat info tentang kamu.")
     else:
         await update.message.reply_text("Tidak ada history yang perlu dihapus.")
-        
-        
+
+
 async def post_init(application):
     """Register commands ke Telegram biar muncul di menu"""
     from telegram import BotCommand
@@ -536,7 +529,7 @@ async def post_init(application):
         BotCommand("movers", "Top gainers & losers 24h"),
         BotCommand("fear", "Fear & Greed Index"),
         BotCommand("tvl", "TVL protokol - /tvl [nama]"),
-        BotCommand("analyze", "Analisa coin - /analyze [coin]"),
+        BotCommand("analyze", "Analisa coin + draft cast - /analyze [coin]"),
 
         # Dokumen
         BotCommand("pdf", "Buat dokumen PDF - /pdf [instruksi]"),
@@ -551,7 +544,8 @@ async def post_init(application):
 
     await application.bot.set_my_commands(commands)
     print("✅ Bot commands registered")
-        
+
+
 # ============================================
 # MAIN
 # ============================================
@@ -569,7 +563,6 @@ def main():
         .build()
     )
 
-    # Commands
     # Commands
     app.add_handler(CommandHandler("start", start))
 
