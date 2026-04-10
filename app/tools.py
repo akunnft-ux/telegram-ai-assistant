@@ -518,82 +518,96 @@ def format_coin_detail_result(result: dict) -> str:
 
 
 def build_daily_pick_prompt(market_data: dict) -> str:
-    prompt_parts = [
-        "You are a professional crypto analyst. Analyze the following real-time market data and:",
-        "1. Pick the ONE most interesting coin to highlight today",
-        "2. Explain WHY in 2-3 sentences based only on the provided data",
-        "3. Generate a ready-to-post Farcaster cast (max 280 characters)",
-        "4. Suggest the best Farcaster channel: /crypto, /degen, /base, or /alpha",
-        "",
-        "CAST RULES:",
-        "- Use ENGLISH",
-        "- Include $TICKER",
-        "- Include specific data points like % move, price, volume, rank, or sentiment",
-        "- Do NOT predict future price",
-        "- End with NFA/DYOR 🔍",
-        "- Tone: data-driven with a slight casual edge",
-        "",
-        "=== MARKET DATA ===",
-        "",
-    ]
+    """Format market data jadi teks data murni — tanpa instruksi"""
+    parts = []
 
+    # Global market
     g = market_data.get("global", {})
     if "error" not in g:
-        prompt_parts.extend([
+        parts.extend([
             "GLOBAL MARKET:",
-            f"- Market Cap: {format_usd(g.get('total_market_cap_usd', 0))}",
-            f"- 24h Change: {g.get('market_cap_change_24h', 0)}%",
+            f"- Total Market Cap: {format_usd(g.get('total_market_cap_usd', 0))}",
+            f"- 24h Market Cap Change: {g.get('market_cap_change_24h', 0)}%",
+            f"- 24h Volume: {format_usd(g.get('total_volume_24h_usd', 0))}",
             f"- BTC Dominance: {g.get('btc_dominance', 0)}%",
             f"- ETH Dominance: {g.get('eth_dominance', 0)}%",
             ""
         ])
 
+    # Fear & Greed
     fg = market_data.get("fear_greed", {})
     if "error" not in fg:
-        prompt_parts.extend([
-            f"FEAR & GREED: {fg.get('value', '?')}/100 ({fg.get('classification', '?')})",
-            ""
-        ])
+        fg_text = f"FEAR & GREED INDEX: {fg.get('value', '?')}/100 ({fg.get('classification', '?')})"
+        if "yesterday_value" in fg:
+            fg_text += f" | Yesterday: {fg['yesterday_value']} ({fg['yesterday_class']})"
+        if "week_ago_value" in fg:
+            fg_text += f" | 7d ago: {fg['week_ago_value']} ({fg['week_ago_class']})"
+        parts.extend([fg_text, ""])
 
+    # Top Gainers
     movers = market_data.get("movers", {})
     if "error" not in movers:
         gainers = movers.get("gainers", [])
         if gainers:
-            prompt_parts.append("TOP GAINERS:")
+            parts.append("TOP GAINERS (24h):")
             for coin in gainers:
-                prompt_parts.append(
-                    f"- ${coin['symbol']}: {coin['change_24h']}% | "
+                vol_mcap_ratio = 0
+                if coin.get('market_cap') and coin['market_cap'] > 0:
+                    vol_mcap_ratio = round(coin['volume_24h'] / coin['market_cap'], 2)
+                parts.append(
+                    f"- ${coin['symbol']}: {coin['change_24h']}% (24h) | "
+                    f"1h: {coin['change_1h']}% | 7d: {coin['change_7d']}% | "
                     f"Price: ${coin['current_price']} | "
                     f"Vol: {format_usd(coin['volume_24h'])} | "
+                    f"MCap: {format_usd(coin['market_cap'])} | "
+                    f"Vol/MCap: {vol_mcap_ratio}x | "
                     f"Rank: #{coin['market_cap_rank']}"
                 )
-            prompt_parts.append("")
+            parts.append("")
 
+        losers = movers.get("losers", [])
+        if losers:
+            parts.append("TOP LOSERS (24h):")
+            for coin in losers:
+                parts.append(
+                    f"- ${coin['symbol']}: {coin['change_24h']}% (24h) | "
+                    f"1h: {coin['change_1h']}% | 7d: {coin['change_7d']}% | "
+                    f"Price: ${coin['current_price']} | "
+                    f"Vol: {format_usd(coin['volume_24h'])} | "
+                    f"MCap: {format_usd(coin['market_cap'])} | "
+                    f"Rank: #{coin['market_cap_rank']}"
+                )
+            parts.append("")
+
+    # Trending
     trending = market_data.get("trending", {})
     if "error" not in trending:
         coins = trending.get("trending", [])
         if coins:
-            prompt_parts.append("TRENDING COINS:")
+            parts.append("TRENDING COINS (CoinGecko):")
             for coin in coins[:7]:
-                prompt_parts.append(
+                change = coin.get('price_change_24h')
+                change_str = f"{round(change, 2)}%" if change else "N/A"
+                parts.append(
                     f"- ${coin['symbol']} ({coin['name']}): "
                     f"Rank #{coin['market_cap_rank']} | "
-                    f"24h: {round(coin.get('price_change_24h', 0), 2) if coin.get('price_change_24h') else 'N/A'}%"
+                    f"24h: {change_str}"
                 )
-            prompt_parts.append("")
+            parts.append("")
 
-    prompt_parts.extend([
-        "=== END DATA ===",
-        "",
-        "Respond EXACTLY in this format:",
-        "",
-        "PICK: $SYMBOL (Name)",
-        "WHY: [2-3 sentence analysis]",
-        "CAST: [ready-to-post cast, max 280 chars]",
-        "CHANNEL: [/crypto or /degen or /base or /alpha]"
-    ])
+    # DEX trending
+    dex = market_data.get("dex", {})
+    if "error" not in dex:
+        dex_coins = dex.get("dex_trending", [])
+        if dex_coins:
+            parts.append("DEX TRENDING (DexScreener):")
+            for token in dex_coins[:5]:
+                chain = token.get('chain', '?')
+                desc = token.get('description', '')[:80]
+                parts.append(f"- [{chain}] {desc}")
+            parts.append("")
 
-    return "\n".join(prompt_parts)
+    return "\n".join(parts)
 
 
 # ============================================
