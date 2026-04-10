@@ -522,12 +522,25 @@ async def post_init(application):
 
     commands = [
         BotCommand("start", "Mulai percakapan"),
+
+        # Crypto
+        BotCommand("daily_pick", "Pilih 1 crypto terbaik hari ini + draft cast"),
+        BotCommand("market", "Global market overview + Fear & Greed"),
+        BotCommand("trending", "Trending coins dari CoinGecko"),
+        BotCommand("movers", "Top gainers & losers 24h"),
+        BotCommand("fear", "Fear & Greed Index"),
+        BotCommand("tvl", "TVL protokol - /tvl [nama]"),
+        BotCommand("analyze", "Analisa coin - /analyze [coin]"),
+
+        # Dokumen
+        BotCommand("pdf", "Buat dokumen PDF - /pdf [instruksi]"),
+        BotCommand("docx", "Buat dokumen DOCX - /docx [instruksi]"),
+
+        # Memory
         BotCommand("memory", "Lihat semua memory"),
         BotCommand("forget", "Hapus 1 memory - /forget [key]"),
         BotCommand("clearmemory", "Hapus semua memory"),
         BotCommand("clearhistory", "Hapus semua percakapan"),
-        BotCommand("pdf", "Buat dokumen PDF - /pdf [instruksi]"),
-        BotCommand("docx", "Buat dokumen DOCX - /docx [instruksi]"),
     ]
 
     await application.bot.set_my_commands(commands)
