@@ -57,19 +57,17 @@ TVL_TOOL = types.Tool(
     ]
 )
 
-# ============================================
-# THINKING CONFIG — Matikan thinking mode untuk Gemma 4
-# ============================================
-
-NO_THINK = types.ThinkingConfig(thinking_budget=0)
-
 
 # ============================================
 # HELPER: EXTRACT FULL TEXT FROM RESPONSE
 # ============================================
 
 def extract_full_text(response):
-    """Extract semua text parts dari response Gemini/Gemma, skip thinking parts"""
+    """
+    Extract text dari response Gemma 4.
+    Gemma 4 selalu pakai thinking mode.
+    Strategi: ambil TEXT parts dulu, kalau kosong ambil THINKING parts.
+    """
     try:
         if not response.candidates:
             print("⚠️ No candidates in response")
@@ -79,27 +77,67 @@ def extract_full_text(response):
         print(f"📊 Finish reason: {candidate.finish_reason}")
         print(f"📊 Parts count: {len(candidate.content.parts)}")
 
-        texts = []
+        text_parts = []
+        thinking_parts = []
+
         for i, part in enumerate(candidate.content.parts):
+            # Kumpulkan thinking parts
             if hasattr(part, 'thought') and part.thought:
-                print(f"📊 Part {i}: thinking (skipped, {len(str(part.thought))} chars)")
+                if hasattr(part, 'text') and part.text:
+                    thinking_parts.append(part.text)
+                    print(f"📊 Part {i}: thinking ({len(part.text)} chars)")
                 continue
+
+            # Skip function call parts
             if hasattr(part, 'function_call') and part.function_call:
                 print(f"📊 Part {i}: function_call (skipped)")
                 continue
-            if hasattr(part, 'text') and part.text:
-                print(f"📊 Part {i}: text ({len(part.text)} chars)")
-                texts.append(part.text)
 
-        if texts:
-            full_text = "\n".join(texts)
-            print(f"📊 Total extracted: {len(full_text)} chars")
+            # Kumpulkan text parts (non-thinking)
+            if hasattr(part, 'text') and part.text:
+                text_parts.append(part.text)
+                print(f"📊 Part {i}: text ({len(part.text)} chars)")
+
+        # Prioritas 1: Gabungkan semua text parts (non-thinking)
+        if text_parts:
+            full_text = "\n".join(text_parts)
+            # Cek apakah text parts isinya "kosong" (cuma basa-basi tanpa substansi)
+            # Kalau text part sangat pendek dan thinking part jauh lebih panjang,
+            # kemungkinan jawaban sebenarnya ada di thinking
+            total_text_len = len(full_text.strip())
+            total_think_len = sum(len(t) for t in thinking_parts)
+
+            print(f"📊 Text parts total: {total_text_len} chars")
+            print(f"📊 Thinking parts total: {total_think_len} chars")
+
+            if total_text_len > 100:
+                # Text cukup panjang, pakai ini
+                print(f"📊 Using text parts: {total_text_len} chars")
+                return full_text
+
+            # Text terlalu pendek, kemungkinan jawaban ada di thinking
+            if thinking_parts and total_think_len > total_text_len:
+                print(f"📊 Text too short ({total_text_len}), using thinking parts ({total_think_len} chars)")
+                return "\n".join(thinking_parts)
+
+            # Tetap pakai text meskipun pendek
+            print(f"📊 Using short text parts: {total_text_len} chars")
             return full_text
 
-        print("⚠️ No text parts found, trying response.text fallback")
-        if response.text:
-            print(f"📊 Fallback response.text: {len(response.text)} chars")
-            return response.text
+        # Prioritas 2: Kalau tidak ada text parts sama sekali, pakai thinking
+        if thinking_parts:
+            full_thinking = "\n".join(thinking_parts)
+            print(f"📊 No text parts, using thinking: {len(full_thinking)} chars")
+            return full_thinking
+
+        # Prioritas 3: Fallback ke response.text
+        print("⚠️ No parts found, trying response.text fallback")
+        try:
+            if response.text:
+                print(f"📊 Fallback response.text: {len(response.text)} chars")
+                return response.text
+        except:
+            pass
 
         print("⚠️ Response completely empty")
         return None
@@ -152,7 +190,6 @@ async def get_response(user_id, user_message, recent_messages):
                 temperature=0.7,
                 max_output_tokens=2048,
                 tools=[TVL_TOOL],
-                thinking_config=NO_THINK,  # ← MATIKAN THINKING
             )
         )
 
@@ -205,7 +242,6 @@ async def get_response(user_id, user_message, recent_messages):
                     temperature=0.7,
                     max_output_tokens=2048,
                     tools=[TVL_TOOL],
-                    thinking_config=NO_THINK,  # ← MATIKAN THINKING
                 )
             )
 
@@ -311,7 +347,6 @@ Write the post now:"""
                 system_instruction=FARCASTER_POST_PROMPT,
                 temperature=0.85,
                 max_output_tokens=400,
-                thinking_config=NO_THINK,  # ← MATIKAN THINKING
             )
         )
 
@@ -376,7 +411,6 @@ Rangkum dalam Bahasa Indonesia:"""
                 system_instruction="Kamu adalah asisten yang merangkum dokumen. Rangkum dengan detail, pertahankan semua informasi penting.",
                 temperature=0.3,
                 max_output_tokens=2048,
-                thinking_config=NO_THINK,  # ← MATIKAN THINKING
             )
         )
 
@@ -469,7 +503,6 @@ Format yang WAJIB diikuti:
                 system_instruction="Kamu adalah penulis dokumen profesional. Tulis konten yang terstruktur, lengkap, informatif, dan rapi. Ikuti format yang diminta dengan tepat.",
                 temperature=0.7,
                 max_output_tokens=4096,
-                thinking_config=NO_THINK,  # ← MATIKAN THINKING
             )
         )
 
@@ -514,7 +547,6 @@ async def analyze_image(user_id, image_bytes, caption, recent_messages, mime_typ
                 system_instruction=system_prompt,
                 temperature=0.7,
                 max_output_tokens=2048,
-                thinking_config=NO_THINK,  # ← MATIKAN THINKING
             )
         )
 
