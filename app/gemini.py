@@ -248,7 +248,7 @@ Write the post now:"""
             config=types.GenerateContentConfig(
                 system_instruction=FARCASTER_POST_PROMPT,
                 temperature=0.85,
-                max_output_tokens=400,
+                max_output_tokens=2048,
             )
         )
 
