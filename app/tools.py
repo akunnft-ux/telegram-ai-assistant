@@ -111,7 +111,7 @@ DEXSCREENER_BASE_URL = "https://api.dexscreener.com"
 def format_usd(value):
     """Format angka ke USD readable"""
     if not value or value == 0:
-        return "\\\$0"
+        return r"\\$0"
     if value >= 1_000_000_000_000:
         return f"${value / 1_000_000_000_000:.2f}T"
     elif value >= 1_000_000_000:
