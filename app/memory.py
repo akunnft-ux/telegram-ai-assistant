@@ -16,7 +16,10 @@ CORE_CATEGORIES = [
 
 
 def extract_memory_from_response(user_id, response_text):
-    pattern = r"$$MEMORY$$(.*?)$$/MEMORY$$"
+    """Extract [MEMORY] block dari response dan simpan ke database"""
+
+    # Pattern yang BENAR untuk [MEMORY]...[/MEMORY]
+    pattern = r"\[MEMORY$$(.*?)$$/MEMORY$$"
     match = re.search(pattern, response_text, re.DOTALL | re.IGNORECASE)
 
     if match:
@@ -29,43 +32,47 @@ def extract_memory_from_response(user_id, response_text):
                 key = key.strip().lower().replace(" ", "_")
                 value = value.strip()
 
-                if key and value:
+                if key and value and len(key) < 30:
                     upsert_memory(user_id, key, value)
-                    print(f"Memory saved: {key} = {value}")
+                    print(f"💾 Memory saved: {key} = {value}")
 
+        # Hapus block [MEMORY]...[/MEMORY] dari response
         clean_response = re.sub(pattern, "", response_text, flags=re.DOTALL | re.IGNORECASE).strip()
         return clean_response
 
-    # Fallback sederhana tanpa regex kompleks
-    if "MEMORY" in response_text.upper():
+    # Fallback: Cari EXACT tag [MEMORY] dan [/MEMORY] (bukan kata "memory" biasa)
+    if "[MEMORY]" in response_text.upper() and "[/MEMORY]" in response_text.upper():
         lines = response_text.split("\n")
         clean_lines = []
         inside_memory = False
 
         for line in lines:
-            upper_line = line.strip().upper()
+            stripped = line.strip()
+            upper_stripped = stripped.upper()
 
-            if "MEMORY" in upper_line and "/" not in upper_line:
+            # Cek EXACT opening tag
+            if upper_stripped == "[MEMORY]":
                 inside_memory = True
                 continue
-            elif "MEMORY" in upper_line and "/" in upper_line:
+            # Cek EXACT closing tag
+            elif upper_stripped == "[/MEMORY]":
                 inside_memory = False
                 continue
 
             if inside_memory:
-                line_stripped = line.strip()
-                if ":" in line_stripped:
-                    key, value = line_stripped.split(":", 1)
+                if ":" in stripped:
+                    key, value = stripped.split(":", 1)
                     key = key.strip().lower().replace(" ", "_")
                     value = value.strip()
                     if key and value and len(key) < 30:
                         upsert_memory(user_id, key, value)
-                        print(f"Memory saved (fallback): {key} = {value}")
+                        print(f"💾 Memory saved (fallback): {key} = {value}")
             else:
                 clean_lines.append(line)
 
         return "\n".join(clean_lines).strip()
 
+    # Tidak ada memory block — kembalikan response apa adanya
     return response_text
 
 
@@ -75,7 +82,6 @@ def format_memories_for_prompt(user_id):
     if not memories:
         return ""
 
-    # 10 atau kurang: tampilkan per baris
     if len(memories) <= 10:
         lines = ["Berikut adalah hal-hal yang kamu ingat tentang user:"]
         for key, value in memories:
@@ -83,7 +89,6 @@ def format_memories_for_prompt(user_id):
             lines.append(f"- {label}: {value}")
         return "\n".join(lines)
 
-    # Lebih dari 10: ringkas jadi paragraf
     parts = []
     for key, value in memories:
         label = key.replace("_", " ")
