@@ -57,6 +57,12 @@ TVL_TOOL = types.Tool(
     ]
 )
 
+# ============================================
+# THINKING CONFIG — Matikan thinking mode untuk Gemma 4
+# ============================================
+
+NO_THINK = types.ThinkingConfig(thinking_budget=0)
+
 
 # ============================================
 # HELPER: EXTRACT FULL TEXT FROM RESPONSE
@@ -75,15 +81,12 @@ def extract_full_text(response):
 
         texts = []
         for i, part in enumerate(candidate.content.parts):
-            # Skip thinking/reasoning parts (Gemma 4 feature)
             if hasattr(part, 'thought') and part.thought:
                 print(f"📊 Part {i}: thinking (skipped, {len(str(part.thought))} chars)")
                 continue
-            # Skip function call parts
             if hasattr(part, 'function_call') and part.function_call:
                 print(f"📊 Part {i}: function_call (skipped)")
                 continue
-            # Collect text parts
             if hasattr(part, 'text') and part.text:
                 print(f"📊 Part {i}: text ({len(part.text)} chars)")
                 texts.append(part.text)
@@ -93,7 +96,6 @@ def extract_full_text(response):
             print(f"📊 Total extracted: {len(full_text)} chars")
             return full_text
 
-        # Fallback ke response.text
         print("⚠️ No text parts found, trying response.text fallback")
         if response.text:
             print(f"📊 Fallback response.text: {len(response.text)} chars")
@@ -104,7 +106,6 @@ def extract_full_text(response):
 
     except Exception as e:
         print(f"⚠️ extract_full_text error: {e}")
-        # Final fallback
         try:
             if response.text:
                 return response.text
@@ -151,6 +152,7 @@ async def get_response(user_id, user_message, recent_messages):
                 temperature=0.7,
                 max_output_tokens=2048,
                 tools=[TVL_TOOL],
+                thinking_config=NO_THINK,  # ← MATIKAN THINKING
             )
         )
 
@@ -203,6 +205,7 @@ async def get_response(user_id, user_message, recent_messages):
                     temperature=0.7,
                     max_output_tokens=2048,
                     tools=[TVL_TOOL],
+                    thinking_config=NO_THINK,  # ← MATIKAN THINKING
                 )
             )
 
@@ -308,6 +311,7 @@ Write the post now:"""
                 system_instruction=FARCASTER_POST_PROMPT,
                 temperature=0.85,
                 max_output_tokens=400,
+                thinking_config=NO_THINK,  # ← MATIKAN THINKING
             )
         )
 
@@ -316,13 +320,11 @@ Write the post now:"""
         if text:
             text = text.strip()
 
-            # Bersihkan kalau Gemini wrap dalam quotes
             if text.startswith('"') and text.endswith('"'):
                 text = text[1:-1].strip()
             if text.startswith("'") and text.endswith("'"):
                 text = text[1:-1].strip()
 
-            # Hapus label yang kadang muncul
             unwanted_prefixes = [
                 "Farcaster Post:", "Farcaster post:",
                 "Post:", "post:",
@@ -333,11 +335,9 @@ Write the post now:"""
                 if text.startswith(prefix):
                     text = text[len(prefix):].strip()
 
-            # Pastikan ada NFA/DYOR di akhir
             if "NFA" not in text and "DYOR" not in text:
                 text += "\n\nNFA/DYOR 🔍"
 
-            # Safety: potong kalau kepanjangan
             if len(text) > 1000:
                 cut = text[:950].rsplit(". ", 1)[0]
                 text = cut + ".\n\nNFA/DYOR 🔍"
@@ -376,6 +376,7 @@ Rangkum dalam Bahasa Indonesia:"""
                 system_instruction="Kamu adalah asisten yang merangkum dokumen. Rangkum dengan detail, pertahankan semua informasi penting.",
                 temperature=0.3,
                 max_output_tokens=2048,
+                thinking_config=NO_THINK,  # ← MATIKAN THINKING
             )
         )
 
@@ -468,6 +469,7 @@ Format yang WAJIB diikuti:
                 system_instruction="Kamu adalah penulis dokumen profesional. Tulis konten yang terstruktur, lengkap, informatif, dan rapi. Ikuti format yang diminta dengan tepat.",
                 temperature=0.7,
                 max_output_tokens=4096,
+                thinking_config=NO_THINK,  # ← MATIKAN THINKING
             )
         )
 
@@ -512,6 +514,7 @@ async def analyze_image(user_id, image_bytes, caption, recent_messages, mime_typ
                 system_instruction=system_prompt,
                 temperature=0.7,
                 max_output_tokens=2048,
+                thinking_config=NO_THINK,  # ← MATIKAN THINKING
             )
         )
 
