@@ -58,6 +58,61 @@ TVL_TOOL = types.Tool(
 )
 
 
+# ============================================
+# HELPER: EXTRACT FULL TEXT FROM RESPONSE
+# ============================================
+
+def extract_full_text(response):
+    """Extract semua text parts dari response Gemini/Gemma, skip thinking parts"""
+    try:
+        if not response.candidates:
+            print("⚠️ No candidates in response")
+            return None
+
+        candidate = response.candidates[0]
+        print(f"📊 Finish reason: {candidate.finish_reason}")
+        print(f"📊 Parts count: {len(candidate.content.parts)}")
+
+        texts = []
+        for i, part in enumerate(candidate.content.parts):
+            # Skip thinking/reasoning parts (Gemma 4 feature)
+            if hasattr(part, 'thought') and part.thought:
+                print(f"📊 Part {i}: thinking (skipped, {len(str(part.thought))} chars)")
+                continue
+            # Skip function call parts
+            if hasattr(part, 'function_call') and part.function_call:
+                print(f"📊 Part {i}: function_call (skipped)")
+                continue
+            # Collect text parts
+            if hasattr(part, 'text') and part.text:
+                print(f"📊 Part {i}: text ({len(part.text)} chars)")
+                texts.append(part.text)
+
+        if texts:
+            full_text = "\n".join(texts)
+            print(f"📊 Total extracted: {len(full_text)} chars")
+            return full_text
+
+        # Fallback ke response.text
+        print("⚠️ No text parts found, trying response.text fallback")
+        if response.text:
+            print(f"📊 Fallback response.text: {len(response.text)} chars")
+            return response.text
+
+        print("⚠️ Response completely empty")
+        return None
+
+    except Exception as e:
+        print(f"⚠️ extract_full_text error: {e}")
+        # Final fallback
+        try:
+            if response.text:
+                return response.text
+        except:
+            pass
+        return None
+
+
 def build_system_prompt(user_id):
     memory_context = format_memories_for_prompt(user_id)
     parts = [BASE_SYSTEM_PROMPT]
@@ -94,13 +149,14 @@ async def get_response(user_id, user_message, recent_messages):
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 temperature=0.7,
-                max_output_tokens=1500,
+                max_output_tokens=2048,
                 tools=[TVL_TOOL],
             )
         )
 
         candidate = response.candidates[0]
 
+        # Check for function call
         function_call_part = None
         for part in candidate.content.parts:
             if hasattr(part, "function_call") and part.function_call:
@@ -145,18 +201,21 @@ async def get_response(user_id, user_message, recent_messages):
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
                     temperature=0.7,
-                    max_output_tokens=1500,
+                    max_output_tokens=2048,
                     tools=[TVL_TOOL],
                 )
             )
 
-            return response2.text if response2.text else formatted_result
+            result = extract_full_text(response2)
+            return result if result else formatted_result
 
-        if not response.text:
+        # No function call — extract text normally
+        result = extract_full_text(response)
+        if not result:
             print("⚠️ Gemini response kosong")
             return "Maaf, aku tidak bisa memproses pesanmu. Coba kirim ulang ya."
 
-        return response.text
+        return result
 
     except Exception as e:
         error_msg = str(e).lower()
@@ -195,7 +254,7 @@ ANALYSIS RULES — apply these BEFORE writing:
 - If 24h change > +100% → question sustainability, look for pump-and-dump signals
 - If 24h change is very negative but 7d/30d is positive → note the divergence, could be healthy pullback or trend reversal
 - If 24h change is positive but 7d/30d is negative → likely dead cat bounce, be skeptical
-- If market cap is very small (<\$10M) with huge volume → extra caution, likely manipulation
+- If market cap is very small (<\\$10M) with huge volume → extra caution, likely manipulation
 - Always consider: is this data telling a COHERENT story or are there contradictions?
 
 WRITING RULES:
@@ -248,12 +307,14 @@ Write the post now:"""
             config=types.GenerateContentConfig(
                 system_instruction=FARCASTER_POST_PROMPT,
                 temperature=0.85,
-                max_output_tokens=2048,
+                max_output_tokens=400,
             )
         )
 
-        if response.text:
-            text = response.text.strip()
+        text = extract_full_text(response)
+
+        if text:
+            text = text.strip()
 
             # Bersihkan kalau Gemini wrap dalam quotes
             if text.startswith('"') and text.endswith('"'):
@@ -278,7 +339,6 @@ Write the post now:"""
 
             # Safety: potong kalau kepanjangan
             if len(text) > 1000:
-                # Potong di kalimat terakhir yang muat
                 cut = text[:950].rsplit(". ", 1)[0]
                 text = cut + ".\n\nNFA/DYOR 🔍"
 
@@ -312,15 +372,16 @@ Rangkum dalam Bahasa Indonesia:"""
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            config={
-                "system_instruction": "Kamu adalah asisten yang merangkum dokumen. Rangkum dengan detail, pertahankan semua informasi penting.",
-                "temperature": 0.3,
-                "max_output_tokens": 2000,
-            }
+            config=types.GenerateContentConfig(
+                system_instruction="Kamu adalah asisten yang merangkum dokumen. Rangkum dengan detail, pertahankan semua informasi penting.",
+                temperature=0.3,
+                max_output_tokens=2048,
+            )
         )
 
-        if response.text:
-            return response.text
+        result = extract_full_text(response)
+        if result:
+            return result
         return f"[Gagal merangkum bagian {chunk_number}]"
 
     except Exception as e:
@@ -403,15 +464,16 @@ Format yang WAJIB diikuti:
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=[{"role": "user", "parts": [{"text": prompt}]}],
-            config={
-                "system_instruction": "Kamu adalah penulis dokumen profesional. Tulis konten yang terstruktur, lengkap, informatif, dan rapi. Ikuti format yang diminta dengan tepat.",
-                "temperature": 0.7,
-                "max_output_tokens": 4000,
-            }
+            config=types.GenerateContentConfig(
+                system_instruction="Kamu adalah penulis dokumen profesional. Tulis konten yang terstruktur, lengkap, informatif, dan rapi. Ikuti format yang diminta dengan tepat.",
+                temperature=0.7,
+                max_output_tokens=4096,
+            )
         )
 
-        if response.text:
-            return response.text
+        result = extract_full_text(response)
+        if result:
+            return result
         return None
 
     except Exception as e:
@@ -449,12 +511,13 @@ async def analyze_image(user_id, image_bytes, caption, recent_messages, mime_typ
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
                 temperature=0.7,
-                max_output_tokens=1500,
+                max_output_tokens=2048,
             )
         )
 
-        if response.text:
-            return response.text
+        result = extract_full_text(response)
+        if result:
+            return result
 
         return "Maaf, aku tidak bisa menganalisis gambar ini. Coba kirim ulang ya."
 
