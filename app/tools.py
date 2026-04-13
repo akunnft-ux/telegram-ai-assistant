@@ -2,7 +2,7 @@ import httpx
 import asyncio
 from datetime import datetime, timedelta
 from app.config import COINGECKO_API_KEY
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 CHUNK_SIZE = 8000
 CHUNK_OVERLAP = 500
@@ -931,175 +931,179 @@ def create_docx_file(content, file_path):
 
 
 # =============================================================
-# Bagian D — Web Search (DuckDuckGo) — Smart Multi-Query
+# Bagian D — Web Search (DDGS) — Simpler and Safer
 # =============================================================
+
+from ddgs import DDGS
 
 
 def generate_query_variations(query: str) -> list[str]:
     """
-    Generate beberapa variasi query dari input user.
-    Agar search lebih fleksibel tanpa user harus tebak kata kunci.
+    Buat variasi query yang aman tanpa merusak maksud asli user.
+    Prinsip: query asli tetap prioritas.
     """
-    query_clean = query.strip()
-    query_lower = query_clean.lower()
-    variations = [query_clean]
+    q = query.strip()
+    ql = q.lower()
 
-    # Mapping kata Indonesia umum ke English untuk topik global
-    id_to_en = {
-        "kondisi": "situation",
-        "situasi": "situation",
-        "berita": "news",
-        "terbaru": "latest",
-        "terkini": "latest",
-        "saat ini": "current",
-        "hari ini": "today",
-        "harga": "price",
-        "perang": "war",
-        "konflik": "conflict",
-        "gempa": "earthquake",
-        "banjir": "flood",
-        "pemilu": "election",
-        "presiden": "president",
-        "ekonomi": "economy",
-        "cuaca": "weather",
-        "jadwal": "schedule",
-        "hasil": "results",
-        "update": "update",
-        "perkembangan": "development",
-        "dampak": "impact",
-        "krisis": "crisis",
-        "serangan": "attack",
-        "militer": "military",
-        "kebijakan": "policy",
-        "pemerintah": "government",
-        "bencana": "disaster",
-        "korban": "casualties",
-        "negosiasi": "negotiation",
-        "sanksi": "sanctions",
-        "invasi": "invasion",
-        "rudal": "missile",
-        "nuklir": "nuclear",
-        "diplomatik": "diplomatic",
-    }
+    variations = [q]
 
-    # Deteksi apakah query sudah mengandung kata waktu
-    time_words = ["saat ini", "hari ini", "terbaru", "terkini", "latest", "today", "current", "update", "now"]
-    has_time = any(tw in query_lower for tw in time_words)
+    realtime_words = [
+        "hari ini", "saat ini", "terbaru", "terkini", "update",
+        "latest", "today", "current", "news"
+    ]
+    has_realtime = any(w in ql for w in realtime_words)
 
-    # Variasi 1: tambah "terbaru" kalau belum ada kata waktu
-    if not has_time:
-        variations.append(f"{query_clean} terbaru")
+    crypto_words = [
+        "bitcoin", "btc", "ethereum", "eth", "solana", "crypto",
+        "kripto", "market", "pasar", "sentimen"
+    ]
+    is_crypto = any(w in ql for w in crypto_words)
 
-    # Variasi 2: tambah "berita terkini" kalau belum ada
-    if "berita" not in query_lower:
-        variations.append(f"berita terkini {query_clean}")
+    # Variasi ringan, tidak mengubah topik inti
+    if not has_realtime:
+        variations.append(f"{q} terbaru")
+        variations.append(f"{q} latest news")
+    else:
+        variations.append(f"{q} latest news")
+        variations.append(f"{q} update")
 
-    # Variasi 3: buat versi English untuk topik global
-    en_words = []
-    remaining = query_lower
-    for id_word, en_word in id_to_en.items():
-        if id_word in remaining:
-            en_words.append(en_word)
-            remaining = remaining.replace(id_word, "").strip()
+    # Kalau topik crypto, tambahkan variasi yang lebih pas
+    if is_crypto:
+        variations.append(f"{q} crypto news")
+        variations.append(f"{q} market sentiment")
 
-    # Sisa kata yang bukan kata umum Indonesia → kemungkinan nama proper (tetap pakai)
-    leftover = [w for w in remaining.split() if len(w) >= 3]
-
-    if en_words or leftover:
-        en_query_parts = leftover + en_words + ["latest news"]
-        en_query = " ".join(en_query_parts)
-        variations.append(en_query)
-
-    # Variasi 4: query asli + "latest news" (campuran)
-    variations.append(f"{query_clean} latest news")
-
-    # Hapus duplikat sambil jaga urutan
+    # Deduplicate sambil jaga urutan
     seen = set()
     unique = []
-    for v in variations:
-        v_clean = v.strip()
-        if v_clean.lower() not in seen:
-            seen.add(v_clean.lower())
-            unique.append(v_clean)
+    for item in variations:
+        cleaned = item.strip()
+        key = cleaned.lower()
+        if cleaned and key not in seen:
+            seen.add(key)
+            unique.append(cleaned)
 
-    return unique[:5]  # Max 5 variasi
+    return unique[:5]
+
+
+def score_result(title: str, snippet: str, query_keywords: list[str]) -> int:
+    """
+    Score relevansi hasil search terhadap keyword query asli.
+    """
+    text = f"{title} {snippet}".lower()
+    score = 0
+
+    for kw in query_keywords:
+        if kw in text:
+            score += 2
+
+    # Bonus untuk domain berita / sumber umum
+    preferred_domains = [
+        "reuters", "bloomberg", "coindesk", "cointelegraph",
+        "bbc", "cnn", "cnbc", "wsj", "ft", "yahoo"
+    ]
+    for domain in preferred_domains:
+        if domain in text:
+            score += 1
+
+    return score
+
+
+def run_text_search(query: str, max_results: int) -> list[dict]:
+    try:
+        with DDGS() as ddgs:
+            return list(ddgs.text(query, region="wt-wt", max_results=max_results))
+    except Exception as e:
+        print(f"[WebSearch] text search error for '{query}': {e}")
+        return []
+
+
+def run_news_search(query: str, max_results: int) -> list[dict]:
+    try:
+        with DDGS() as ddgs:
+            return list(ddgs.news(query, region="wt-wt", max_results=max_results))
+    except Exception as e:
+        print(f"[WebSearch] news search error for '{query}': {e}")
+        return []
 
 
 def web_search(query: str, max_results: int = 5) -> list[dict]:
     """
-    Search web via DuckDuckGo dengan multi-query otomatis.
-    Coba beberapa variasi query, gabungkan dan ranking hasilnya berdasarkan relevansi.
+    Search web pakai kombinasi DDGS text + news.
+    Prioritas:
+    1. Query asli user
+    2. Variasi ringan
+    3. Ranking berdasarkan keyword match
     """
     try:
+        query = query.strip()
         variations = generate_query_variations(query)
         print(f"[WebSearch] Query variations: {variations}")
 
-        # Kata kunci untuk scoring relevansi (minimal 3 huruf)
-        keywords = [w.lower() for w in query.strip().split() if len(w) >= 3]
+        query_keywords = [w.lower() for w in query.split() if len(w) >= 3]
 
+        collected = []
         seen_urls = set()
-        all_results = []
 
-        for i, q in enumerate(variations):
-            try:
-                with DDGS() as ddgs:
-                    raw = list(ddgs.text(q, region="wt-wt", max_results=max_results))
+        for q in variations:
+            text_results = run_text_search(q, max_results)
+            news_results = run_news_search(q, max_results)
 
-                for r in raw:
-                    url = r.get("href", "")
-                    if not url or url in seen_urls:
-                        continue
-                    seen_urls.add(url)
+            print(f"[WebSearch] Query '{q}' -> text={len(text_results)}, news={len(news_results)}")
 
-                    title = r.get("title", "")
-                    snippet = r.get("body", "")
-                    combined_text = f"{title} {snippet}".lower()
+            merged = []
 
-                    # Hitung skor relevansi
-                    score = 0
-                    for kw in keywords:
-                        if kw in combined_text:
-                            score += 2
-                    # Bonus kalau dari query pertama (paling original)
-                    if i == 0:
-                        score += 1
+            for r in news_results:
+                merged.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "snippet": r.get("body", ""),
+                    "_source_type": "news",
+                })
 
-                    all_results.append({
-                        "title": title,
-                        "url": url,
-                        "snippet": snippet,
-                        "_score": score,
-                        "_query": q,
-                    })
+            for r in text_results:
+                merged.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("href", ""),
+                    "snippet": r.get("body", ""),
+                    "_source_type": "text",
+                })
 
-                print(f"[WebSearch] Query '{q}' -> {len(raw)} results")
+            for item in merged:
+                url = item.get("url", "").strip()
+                if not url or url in seen_urls:
+                    continue
 
-            except Exception as e:
-                print(f"[WebSearch] Error on query '{q}': {e}")
-                continue
+                seen_urls.add(url)
 
-        if not all_results:
-            print("[WebSearch] No results from any query variation")
+                score = score_result(item["title"], item["snippet"], query_keywords)
+
+                # Bonus untuk news result
+                if item["_source_type"] == "news":
+                    score += 2
+
+                item["_score"] = score
+                collected.append(item)
+
+        if not collected:
+            print("[WebSearch] No results collected")
             return []
 
-        # Sort by relevance score (highest first)
-        all_results.sort(key=lambda x: x["_score"], reverse=True)
+        collected.sort(key=lambda x: x["_score"], reverse=True)
 
-        # Prefer results with score > 0, fallback to all
-        filtered = [x for x in all_results if x["_score"] > 0]
-        final_pool = filtered if filtered else all_results
+        # Ambil hasil relevan dulu
+        filtered = [x for x in collected if x["_score"] > 0]
+        final_pool = filtered if filtered else collected
 
-        # Ambil top results
-        final = []
-        for r in final_pool[:max_results]:
-            final.append({
-                "title": r["title"],
-                "url": r["url"],
-                "snippet": r["snippet"],
+        final_results = []
+        for item in final_pool[:max_results]:
+            final_results.append({
+                "title": item["title"],
+                "url": item["url"],
+                "snippet": item["snippet"],
             })
 
-        print(f"[WebSearch] Final results: {len(final)} (from {len(all_results)} total collected)")
-        return final
+        print(f"[WebSearch] Final results count: {len(final_results)}")
+        return final_results
 
     except Exception as e:
         print(f"[WebSearch] Fatal error: {e}")
@@ -1107,14 +1111,19 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
 
 
 def format_search_results(query: str, results: list[dict]) -> str:
-    """Format search results jadi teks konteks untuk Gemini."""
+    """
+    Format hasil search jadi teks konteks untuk Gemini.
+    """
     if not results:
         return f"Pencarian untuk '{query}' tidak menemukan hasil."
 
-    formatted = f"Hasil pencarian web untuk: '{query}'\n\n"
-    for i, r in enumerate(results, 1):
-        formatted += f"{i}. {r['title']}\n"
-        formatted += f"   {r['snippet']}\n"
-        formatted += f"   Sumber: {r['url']}\n\n"
+    lines = [f"Hasil pencarian web untuk: '{query}'", ""]
 
-    return formatted.strip()
+    for i, r in enumerate(results, 1):
+        lines.append(f"{i}. {r['title']}")
+        if r.get("snippet"):
+            lines.append(f"   {r['snippet']}")
+        lines.append(f"   Sumber: {r['url']}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
