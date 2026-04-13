@@ -1,6 +1,3 @@
-Berikut semua file dokumentasi dalam **Bahasa Inggris**, tinggal copy paste:
-
----
 
 ## 1. `README.md`
 
