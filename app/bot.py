@@ -1,9 +1,17 @@
 import os
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 from app.config import TELEGRAM_BOT_TOKEN
-from app.gemini import get_response, process_long_document, generate_document_content, analyze_image, generate_farcaster_post
+from app.gemini import (
+    get_response,
+    get_response_with_search,    # === WEB SEARCH === BARU
+    search_and_respond,           # === WEB SEARCH === BARU
+    process_long_document,
+    generate_document_content,
+    analyze_image,
+    generate_farcaster_post,
+)
 from app.database import init_db, save_message, get_recent_messages, get_all_memories, delete_memory, clear_history
 from app.memory import extract_memory_from_response
 
@@ -39,6 +47,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Halo! Aku asisten AI kamu. Langsung aja ngobrol 😊")
 
 
+# === WEB SEARCH === handle_message sekarang pakai get_response_with_search
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user_message = update.message.text
@@ -48,11 +57,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.chat.send_action("typing")
 
-    raw_response = await get_response(user_id, user_message, recent_messages)
+    # Pakai get_response_with_search agar auto-detect web search
+    raw_response = await get_response_with_search(user_id, user_message, recent_messages)
     clean_response = extract_memory_from_response(user_id, raw_response)
     save_message(user_id, "assistant", clean_response)
 
-    await update.message.reply_text(clean_response)
+    if len(clean_response) > 4096:
+        for i in range(0, len(clean_response), 4096):
+            await update.message.reply_text(clean_response[i:i + 4096])
+    else:
+        await update.message.reply_text(clean_response)
+
+
+# === WEB SEARCH === Command /search manual
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk /search — manual web search."""
+    user_id = str(update.effective_user.id)
+
+    if not context.args:
+        await update.message.reply_text(
+            "Gunakan format:\n/search [kata kunci]\n\n"
+            "Contoh:\n/search harga Bitcoin hari ini\n"
+            "/search berita terbaru AI 2025\n"
+            "/search jadwal timnas Indonesia"
+        )
+        return
+
+    query = " ".join(context.args)
+
+    await update.message.chat.send_action("typing")
+
+    # Simpan ke DB
+    save_message(user_id, "user", f"/search {query}")
+
+    # Ambil recent messages untuk konteks
+    recent_messages = get_recent_messages(user_id, limit=20)
+
+    # Search + respond (1 API call)
+    raw_response = await search_and_respond(user_id, query, recent_messages)
+
+    # Parse memory
+    clean_response = extract_memory_from_response(user_id, raw_response)
+
+    # Simpan response
+    save_message(user_id, "assistant", clean_response)
+
+    # Reply (handle pesan panjang)
+    if len(clean_response) > 4096:
+        for i in range(0, len(clean_response), 4096):
+            await update.message.reply_text(clean_response[i:i + 4096])
+    else:
+        await update.message.reply_text(clean_response)
 
 
 # ============================================
@@ -515,12 +570,12 @@ async def clearhistory_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("Tidak ada history yang perlu dihapus.")
 
 
+# === WEB SEARCH === Update post_init dengan /search
 async def post_init(application):
     """Register commands ke Telegram biar muncul di menu"""
-    from telegram import BotCommand
-
     commands = [
         BotCommand("start", "Mulai percakapan"),
+        BotCommand("search", "Cari di internet - /search [kata kunci]"),  # === WEB SEARCH === BARU
 
         # Crypto
         BotCommand("daily_pick", "Pilih 1 crypto terbaik hari ini + draft cast"),
@@ -565,6 +620,7 @@ def main():
 
     # Commands
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("search", search_command))  # === WEB SEARCH === BARU
 
     # Crypto commands
     app.add_handler(CommandHandler("daily_pick", daily_pick_command))
@@ -589,7 +645,7 @@ def main():
     # Document handler
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
-    # Text handler
+    # Text handler (TERAKHIR — agar tidak menangkap command/photo/document)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("🤖 Bot is running...")

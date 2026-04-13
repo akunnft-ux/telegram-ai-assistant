@@ -6,3 +6,4 @@ PyPDF2
 python-docx
 openpyxl
 fpdf2
+duckduckgo-search

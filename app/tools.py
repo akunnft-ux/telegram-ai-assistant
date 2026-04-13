@@ -2,6 +2,7 @@ import httpx
 import asyncio
 from datetime import datetime, timedelta
 from app.config import COINGECKO_API_KEY
+from duckduckgo_search import DDGS
 
 CHUNK_SIZE = 8000  # karakter per chunk
 CHUNK_OVERLAP = 500  # overlap antar chunk biar konteks tidak putus
@@ -951,3 +952,47 @@ def create_docx_file(content, file_path):
 
     doc.save(file_path)
     return title
+
+
+# =============================================================
+# Bagian D — Web Search (DuckDuckGo)
+# =============================================================
+
+
+
+
+def web_search(query: str, max_results: int = 5) -> list[dict]:
+    """
+    Search web via DuckDuckGo.
+    Return list of {title, url, snippet}.
+    Synchronous function (DDGS tidak async).
+    """
+    try:
+        results = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, region="id-id", max_results=max_results):
+                results.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("href", ""),
+                    "snippet": r.get("body", ""),
+                })
+        return results
+    except Exception as e:
+        print(f"[WebSearch] Error: {e}")
+        return []
+
+
+def format_search_results(query: str, results: list[dict]) -> str:
+    """
+    Format search results jadi teks konteks untuk Gemini.
+    """
+    if not results:
+        return f"Pencarian untuk '{query}' tidak menemukan hasil."
+
+    formatted = f"Hasil pencarian web untuk: '{query}'\n\n"
+    for i, r in enumerate(results, 1):
+        formatted += f"{i}. {r['title']}\n"
+        formatted += f"   {r['snippet']}\n"
+        formatted += f"   Sumber: {r['url']}\n\n"
+
+    return formatted.strip()

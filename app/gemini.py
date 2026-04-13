@@ -1,8 +1,11 @@
+import re
+import asyncio
 from google import genai
 from google.genai import types
 from app.config import GEMINI_API_KEY, GEMINI_MODEL
 from app.memory import format_memories_for_prompt
 from app.tools import get_tvl_growth, format_tvl_result
+from app.tools import web_search, format_search_results
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -37,6 +40,26 @@ Kalau ada info baru, tambahkan di AKHIR jawabanmu dengan format:
 [MEMORY]
 key: value
 [/MEMORY]"""
+
+# === WEB SEARCH === Instruksi search untuk system prompt
+SEARCH_INSTRUCTION = """
+
+## Kemampuan Web Search
+Kamu memiliki kemampuan mencari informasi di internet. Jika kamu merasa perlu informasi terbaru atau tidak yakin dengan jawabanmu, kamu bisa meminta pencarian web dengan menulis tag:
+
+[SEARCH]kata kunci pencarian[/SEARCH]
+
+Aturan penggunaan search:
+- Gunakan HANYA jika benar-benar perlu informasi terbaru/faktual yang kamu tidak yakin
+- Jangan gunakan untuk pertanyaan opini, salam, atau obrolan biasa
+- Jangan gunakan jika kamu sudah cukup yakin dengan jawabanmu
+- Tulis query pencarian yang spesifik dan efektif dalam bahasa yang sesuai topik
+- Jika user bertanya dalam bahasa Indonesia tentang topik lokal, search dalam bahasa Indonesia
+- Jika topik teknis/global, search dalam bahasa Inggris
+- HANYA tulis tag [SEARCH], jangan tulis jawaban lain bersamaan tag itu
+- Setelah mendapat hasil pencarian, jawab berdasarkan informasi tersebut dengan menyertakan sumber
+"""
+
 
 TVL_TOOL = types.Tool(
     function_declarations=[
@@ -81,29 +104,22 @@ def extract_full_text(response):
         thinking_parts = []
 
         for i, part in enumerate(candidate.content.parts):
-            # Kumpulkan thinking parts
             if hasattr(part, 'thought') and part.thought:
                 if hasattr(part, 'text') and part.text:
                     thinking_parts.append(part.text)
                     print(f"📊 Part {i}: thinking ({len(part.text)} chars)")
                 continue
 
-            # Skip function call parts
             if hasattr(part, 'function_call') and part.function_call:
                 print(f"📊 Part {i}: function_call (skipped)")
                 continue
 
-            # Kumpulkan text parts (non-thinking)
             if hasattr(part, 'text') and part.text:
                 text_parts.append(part.text)
                 print(f"📊 Part {i}: text ({len(part.text)} chars)")
 
-        # Prioritas 1: Gabungkan semua text parts (non-thinking)
         if text_parts:
             full_text = "\n".join(text_parts)
-            # Cek apakah text parts isinya "kosong" (cuma basa-basi tanpa substansi)
-            # Kalau text part sangat pendek dan thinking part jauh lebih panjang,
-            # kemungkinan jawaban sebenarnya ada di thinking
             total_text_len = len(full_text.strip())
             total_think_len = sum(len(t) for t in thinking_parts)
 
@@ -111,26 +127,21 @@ def extract_full_text(response):
             print(f"📊 Thinking parts total: {total_think_len} chars")
 
             if total_text_len > 100:
-                # Text cukup panjang, pakai ini
                 print(f"📊 Using text parts: {total_text_len} chars")
                 return full_text
 
-            # Text terlalu pendek, kemungkinan jawaban ada di thinking
             if thinking_parts and total_think_len > total_text_len:
                 print(f"📊 Text too short ({total_text_len}), using thinking parts ({total_think_len} chars)")
                 return "\n".join(thinking_parts)
 
-            # Tetap pakai text meskipun pendek
             print(f"📊 Using short text parts: {total_text_len} chars")
             return full_text
 
-        # Prioritas 2: Kalau tidak ada text parts sama sekali, pakai thinking
         if thinking_parts:
             full_thinking = "\n".join(thinking_parts)
             print(f"📊 No text parts, using thinking: {len(full_thinking)} chars")
             return full_thinking
 
-        # Prioritas 3: Fallback ke response.text
         print("⚠️ No parts found, trying response.text fallback")
         try:
             if response.text:
@@ -152,11 +163,28 @@ def extract_full_text(response):
         return None
 
 
+# === WEB SEARCH === Fungsi extract search query dari response
+def extract_search_query(response_text: str):
+    """
+    Cek apakah response Gemini mengandung tag [SEARCH]...[/SEARCH].
+    Return query string jika ada, None jika tidak.
+    """
+    pattern = r'$$SEARCH$$(.*?)$$/SEARCH$$'
+    match = re.search(pattern, response_text, re.DOTALL | re.IGNORECASE)
+    if match:
+        query = match.group(1).strip()
+        if query:
+            return query
+    return None
+
+
+# === WEB SEARCH === Update build_system_prompt dengan SEARCH_INSTRUCTION
 def build_system_prompt(user_id):
+    """Build system prompt with memory context and search capability."""
     memory_context = format_memories_for_prompt(user_id)
-    parts = [BASE_SYSTEM_PROMPT]
+    parts = [BASE_SYSTEM_PROMPT, SEARCH_INSTRUCTION]
     if memory_context:
-        parts.append(memory_context)
+        parts.append(f"## Informasi tentang user\n{memory_context}")
     parts.append(MEMORY_EXTRACTION_PROMPT)
     return "\n\n".join(parts)
 
@@ -195,7 +223,6 @@ async def get_response(user_id, user_message, recent_messages):
 
         candidate = response.candidates[0]
 
-        # Check for function call
         function_call_part = None
         for part in candidate.content.parts:
             if hasattr(part, "function_call") and part.function_call:
@@ -248,7 +275,6 @@ async def get_response(user_id, user_message, recent_messages):
             result = extract_full_text(response2)
             return result if result else formatted_result
 
-        # No function call — extract text normally
         result = extract_full_text(response)
         if not result:
             print("⚠️ Gemini response kosong")
@@ -279,6 +305,111 @@ async def get_response(user_id, user_message, recent_messages):
         return "Maaf, aku lagi ada gangguan. Coba lagi nanti ya."
 
 
+# === WEB SEARCH === Auto-detect search flow
+async def get_response_with_search(user_id, user_message, recent_messages):
+    """
+    Wrapper get_response yang handle auto web search.
+
+    Flow:
+    1. Panggil get_response() biasa — 1 API call
+    2. Cek apakah response mengandung [SEARCH]query[/SEARCH]
+    3. Jika ya:
+       - Execute search lokal (0 API call)
+       - Kirim hasil search + pertanyaan asli ke Gemini — 1 API call lagi
+       - Return jawaban final
+    4. Jika tidak: return response biasa
+    """
+    # Call 1: response biasa
+    response = await get_response(user_id, user_message, recent_messages)
+
+    if not response:
+        return response
+
+    # Cek apakah Gemini minta search
+    search_query = extract_search_query(response)
+
+    if not search_query:
+        # Tidak perlu search, return langsung
+        return response
+
+    # Gemini minta search — execute secara lokal
+    print(f"🔍 [WebSearch] Gemini requested search: '{search_query}'")
+
+    # DuckDuckGo search (synchronous, jalankan di thread)
+    search_results = await asyncio.to_thread(web_search, search_query)
+
+    if not search_results:
+        search_context = (
+            f"Pencarian web untuk '{search_query}' tidak menemukan hasil. "
+            f"Jawab pertanyaan user sebaik mungkin berdasarkan pengetahuanmu."
+        )
+    else:
+        search_context = format_search_results(search_query, search_results)
+
+    # Bangun prompt dengan konteks search
+    search_prompt = (
+        f"Berikut hasil pencarian web yang kamu minta:\n\n"
+        f"{search_context}\n\n"
+        f"Berdasarkan hasil pencarian di atas, jawab pertanyaan user berikut:\n"
+        f"{user_message}\n\n"
+        f"Instruksi:\n"
+        f"- Jawab berdasarkan informasi dari hasil pencarian\n"
+        f"- Sebutkan sumber jika relevan\n"
+        f"- Tetap ringkas dan natural\n"
+        f"- Jawab dalam bahasa Indonesia kecuali user minta bahasa lain"
+    )
+
+    # Call 2: kirim hasil search ke Gemini
+    print(f"🔍 [WebSearch] Sending search results to Gemini (Call 2)")
+    response_with_search = await get_response(
+        user_id, search_prompt, recent_messages
+    )
+
+    if response_with_search:
+        return response_with_search
+    else:
+        # Fallback: return formatted search results langsung
+        return (
+            f"🔍 Hasil pencarian untuk: {search_query}\n\n"
+            f"{search_context}\n\n"
+            f"(Maaf, saya tidak bisa merangkum hasilnya saat ini)"
+        )
+
+
+# === WEB SEARCH === Manual /search command
+async def search_and_respond(user_id, query, recent_messages):
+    """
+    Untuk command /search manual.
+    Langsung search tanpa minta Gemini decide dulu.
+    Hanya 1 API call.
+    """
+    print(f"🔍 [WebSearch] Manual search: '{query}'")
+
+    # Search lokal
+    search_results = await asyncio.to_thread(web_search, query)
+
+    if not search_results:
+        return f"🔍 Pencarian untuk '{query}' tidak menemukan hasil."
+
+    search_context = format_search_results(query, search_results)
+
+    # Bangun prompt
+    search_prompt = (
+        f"User meminta pencarian web. Berikut hasilnya:\n\n"
+        f"{search_context}\n\n"
+        f"Rangkum informasi di atas dengan rapi dan natural dalam bahasa Indonesia. "
+        f"Sertakan sumber/link yang relevan."
+    )
+
+    # 1 API call
+    response = await get_response(user_id, search_prompt, recent_messages)
+
+    if response:
+        return response
+    else:
+        return f"🔍 Hasil pencarian untuk: '{query}'\n\n{search_context}"
+
+
 # ============================================
 # FARCASTER POST GENERATOR
 # ============================================
@@ -293,7 +424,7 @@ ANALYSIS RULES — apply these BEFORE writing:
 - If 24h change > +100% → question sustainability, look for pump-and-dump signals
 - If 24h change is very negative but 7d/30d is positive → note the divergence, could be healthy pullback or trend reversal
 - If 24h change is positive but 7d/30d is negative → likely dead cat bounce, be skeptical
-- If market cap is very small (<\\$10M) with huge volume → extra caution, likely manipulation
+- If market cap is very small (<\\\$10M) with huge volume → extra caution, likely manipulation
 - Always consider: is this data telling a COHERENT story or are there contradictions?
 
 WRITING RULES:
