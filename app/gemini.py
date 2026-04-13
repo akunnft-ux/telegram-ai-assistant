@@ -423,7 +423,7 @@ ANALYSIS RULES — apply these BEFORE writing:
 - If 24h change > +100% → question sustainability, look for pump-and-dump signals
 - If 24h change is very negative but 7d/30d is positive → note the divergence, could be healthy pullback or trend reversal
 - If 24h change is positive but 7d/30d is negative → likely dead cat bounce, be skeptical
-- If market cap is very small (<\\\$10M) with huge volume → extra caution, likely manipulation
+- If market cap is very small (<\$10M) with huge volume → extra caution, likely manipulation
 - Always consider: is this data telling a COHERENT story or are there contradictions?
 
 WRITING RULES:

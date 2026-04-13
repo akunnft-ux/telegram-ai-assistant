@@ -46,6 +46,49 @@ IMAGE_MIME_MAP = {
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Halo! Aku asisten AI kamu. Langsung aja ngobrol 😊")
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tampilkan semua command yang tersedia."""
+    help_text = """🤖 Daftar Command yang Tersedia:
+
+💬 UMUM
+/start - Mulai percakapan
+/help - Tampilkan bantuan ini
+/search [kata kunci] - Cari info di internet
+  Contoh: /search harga emas hari ini
+
+📊 CRYPTO
+/daily_pick - Pilih 1 crypto terbaik hari ini + draft cast
+/market - Global market overview + Fear & Greed
+/trending - Trending coins dari CoinGecko
+/movers - Top gainers & losers 24h
+/fear - Fear & Greed Index
+/tvl [nama] - TVL protokol DeFi
+  Contoh: /tvl aave
+/analyze [coin] - Analisa coin + draft Farcaster post
+  Contoh: /analyze bitcoin
+
+📄 DOKUMEN
+/pdf [instruksi] - Buat dokumen PDF
+  Contoh: /pdf buatkan rangkuman tentang AI
+/docx [instruksi] - Buat dokumen DOCX
+  Contoh: /docx buat laporan meeting
+
+🧠 MEMORY
+/memory - Lihat semua yang aku ingat tentang kamu
+/forget [key] - Hapus 1 memory
+  Contoh: /forget nama_kucing
+/clearmemory - Hapus semua memory
+/clearhistory - Hapus semua history chat
+
+📎 FITUR LAIN (tanpa command)
+- Kirim foto → aku analisis isinya
+- Kirim dokumen (PDF/DOCX/CSV/XLSX/TXT/JSON dll) → aku baca dan rangkum
+- Tanya apa aja → aku jawab, kalau butuh info terbaru aku otomatis cari di internet
+
+💡 Tips: Kamu bisa langsung ngobrol biasa tanpa command. Aku akan otomatis cari di internet kalau pertanyaanmu butuh info terbaru!"""
+
+    await update.message.reply_text(help_text)
+
 
 # === WEB SEARCH === handle_message sekarang pakai get_response_with_search
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -575,6 +618,7 @@ async def post_init(application):
     """Register commands ke Telegram biar muncul di menu"""
     commands = [
         BotCommand("start", "Mulai percakapan"),
+        BotCommand("help", "Tampilkan semua command"),
         BotCommand("search", "Cari di internet - /search [kata kunci]"),  # === WEB SEARCH === BARU
 
         # Crypto
@@ -620,6 +664,7 @@ def main():
 
     # Commands
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("search", search_command))  # === WEB SEARCH === BARU
 
     # Crypto commands
