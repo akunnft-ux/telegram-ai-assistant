@@ -413,7 +413,7 @@ async def search_and_respond(user_id, query, recent_messages):
 # FARCASTER POST GENERATOR
 # ============================================
 
-FARCASTER_POST_PROMPT = """You are a sharp, honest crypto analyst who posts on Farcaster.
+FARCASTER_POST_PROMPT = r"""You are a sharp, honest crypto analyst who posts on Farcaster.
 Your audience is crypto-native people who hate generic bot posts and shill content.
 They value original thinking, honest takes, and specific data.
 
