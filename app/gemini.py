@@ -395,11 +395,16 @@ async def search_and_respond(user_id, query, recent_messages):
 
     # Bangun prompt
     search_prompt = (
-        f"User meminta pencarian web. Berikut hasilnya:\n\n"
-        f"{search_context}\n\n"
-        f"Rangkum informasi di atas dengan rapi dan natural dalam bahasa Indonesia. "
-        f"Sertakan sumber/link yang relevan."
-    )
+    f"User meminta pencarian web untuk query: {query}\n\n"
+    f"Berikut hasil pencarian web:\n\n"
+    f"{search_context}\n\n"
+    f"Tugasmu:\n"
+    f"- Nilai dulu apakah hasil pencarian ini benar-benar relevan dengan query user\n"
+    f"- Jika relevan, rangkum dengan rapi dalam bahasa Indonesia\n"
+    f"- Jika sebagian tidak relevan, abaikan yang tidak relevan\n"
+    f"- Jika mayoritas hasil tidak relevan, katakan hasil pencarian kurang relevan dan sarankan query yang lebih tepat\n"
+    f"- Sertakan sumber/link yang relevan jika ada"
+)
 
     # 1 API call
     response = await get_response(user_id, search_prompt, recent_messages)

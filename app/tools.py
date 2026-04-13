@@ -963,20 +963,100 @@ def create_docx_file(content, file_path):
 
 def web_search(query: str, max_results: int = 5) -> list[dict]:
     """
-    Search web via DuckDuckGo.
+    Search web via DuckDuckGo dengan fallback query.
     Return list of {title, url, snippet}.
-    Synchronous function (DDGS tidak async).
     """
-    try:
-        results = []
+    def normalize(text: str) -> str:
+        return (text or "").lower().strip()
+
+    def score_result(result: dict, keywords: list[str]) -> int:
+        text = f"{result.get('title', '')} {result.get('body', '')}".lower()
+        score = 0
+        for kw in keywords:
+            if kw in text:
+                score += 1
+        return score
+
+    def run_search(search_query: str):
+        items = []
         with DDGS() as ddgs:
-            for r in ddgs.text(query, region="id-id", max_results=max_results):
-                results.append({
-                    "title": r.get("title", ""),
-                    "url": r.get("href", ""),
-                    "snippet": r.get("body", ""),
-                })
-        return results
+            for r in ddgs.text(search_query, region="wt-wt", max_results=max_results):
+                items.append(r)
+        return items
+
+    try:
+        query_clean = query.strip()
+        query_lower = query_clean.lower()
+
+        fallback_queries = [query_clean]
+
+        # Kalau ada indikasi topik berita / real-time / geopolitik, tambahkan fallback english
+        realtime_keywords = [
+            "saat ini", "hari ini", "terbaru", "latest", "news", "update",
+            "konflik", "perang", "geopolitik", "kondisi", "situation"
+        ]
+        if any(k in query_lower for k in realtime_keywords):
+            fallback_queries.extend([
+                f"{query_clean} latest news",
+                f"{query_clean} update",
+            ])
+
+        # fallback khusus Selat Hormuz / topik global
+        if "selat hormuz" in query_lower or "hormuz" in query_lower:
+            fallback_queries.extend([
+                "Hormuz Strait latest news",
+                "Hormuz Strait current situation",
+                "Strait of Hormuz latest developments",
+            ])
+
+        seen_urls = set()
+        collected = []
+
+        # kata kunci relevansi dasar
+        keywords = [w for w in query_lower.split() if len(w) >= 4]
+
+        for q in fallback_queries:
+            try:
+                raw_results = run_search(q)
+
+                for r in raw_results:
+                    url = r.get("href", "")
+                    if not url or url in seen_urls:
+                        continue
+
+                    seen_urls.add(url)
+
+                    item = {
+                        "title": r.get("title", ""),
+                        "url": url,
+                        "snippet": r.get("body", ""),
+                    }
+
+                    relevance = score_result(r, keywords)
+                    item["_score"] = relevance
+                    collected.append(item)
+
+            except Exception as inner_e:
+                print(f"[WebSearch] Fallback query error ({q}): {inner_e}")
+                continue
+
+        if not collected:
+            return []
+
+        # Urutkan berdasarkan relevansi
+        collected.sort(key=lambda x: x.get("_score", 0), reverse=True)
+
+        # Ambil hanya yang cukup relevan
+        filtered = [x for x in collected if x.get("_score", 0) > 0]
+
+        final_results = filtered[:max_results] if filtered else collected[:max_results]
+
+        # Hapus field internal
+        for item in final_results:
+            item.pop("_score", None)
+
+        return final_results
+
     except Exception as e:
         print(f"[WebSearch] Error: {e}")
         return []
