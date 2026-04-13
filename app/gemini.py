@@ -88,7 +88,7 @@ def extract_full_text(response):
     """
     Extract text dari response Gemma 4.
     Gemma 4 selalu pakai thinking mode.
-    Strategi: ambil TEXT parts dulu, kalau kosong ambil THINKING parts.
+    Strategi: selalu prioritaskan TEXT parts. Thinking parts hanya fallback.
     """
     try:
         if not response.candidates:
@@ -117,7 +117,7 @@ def extract_full_text(response):
                 text_parts.append(part.text)
                 print(f"📊 Part {i}: text ({len(part.text)} chars)")
 
-               if text_parts:
+        if text_parts:
             full_text = "\n".join(text_parts)
             total_text_len = len(full_text.strip())
             total_think_len = sum(len(t) for t in thinking_parts)
@@ -125,13 +125,10 @@ def extract_full_text(response):
             print(f"📊 Text parts total: {total_text_len} chars")
             print(f"📊 Thinking parts total: {total_think_len} chars")
 
-            # Kalau ada text parts dengan isi, selalu pakai text parts
-            # Text parts = jawaban final model, thinking parts = proses berpikir internal
             if total_text_len > 0:
                 print(f"📊 Using text parts: {total_text_len} chars")
                 return full_text
 
-            # Text parts kosong total, fallback ke thinking
             if thinking_parts:
                 print(f"📊 Text empty, using thinking parts: {total_think_len} chars")
                 return "\n".join(thinking_parts)
@@ -162,7 +159,6 @@ def extract_full_text(response):
         except:
             pass
         return None
-
 
 def extract_search_query(response_text: str):
     """
