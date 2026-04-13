@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from app.config import COINGECKO_API_KEY
 from duckduckgo_search import DDGS
 
-CHUNK_SIZE = 8000  # karakter per chunk
-CHUNK_OVERLAP = 500  # overlap antar chunk biar konteks tidak putus
+CHUNK_SIZE = 8000
+CHUNK_OVERLAP = 500
 
 DEFILLAMA_BASE_URL = "https://api.llama.fi"
 
@@ -30,12 +30,10 @@ async def get_tvl_growth(protocol_name: str) -> dict:
             if not tvl_data:
                 return {"error": f"Data TVL untuk '{protocol_name}' tidak tersedia."}
 
-            # Ambil TVL sekarang (index terakhir)
             current = tvl_data[-1]
             current_tvl = current["totalLiquidityUSD"]
             current_date = datetime.fromtimestamp(current["date"]).strftime("%d %b %Y")
 
-            # Cari TVL 30 hari lalu
             target_date = datetime.now() - timedelta(days=30)
             past_entry = None
 
@@ -51,7 +49,6 @@ async def get_tvl_growth(protocol_name: str) -> dict:
             past_tvl = past_entry["totalLiquidityUSD"]
             past_date = datetime.fromtimestamp(past_entry["date"]).strftime("%d %b %Y")
 
-            # Hitung growth
             if past_tvl == 0:
                 return {"error": "TVL 30 hari lalu adalah 0, tidak bisa hitung growth."}
 
@@ -98,6 +95,7 @@ def format_tvl_result(result: dict) -> str:
         f"- Growth: {arrow}{growth}%"
     )
 
+
 # ============================================
 # CRYPTO MARKET TOOLS
 # ============================================
@@ -112,7 +110,7 @@ DEXSCREENER_BASE_URL = "https://api.dexscreener.com"
 def format_usd(value):
     """Format angka ke USD readable"""
     if not value or value == 0:
-        return r"\\$0"
+        return r"\\\$0"
     if value >= 1_000_000_000_000:
         return f"${value / 1_000_000_000_000:.2f}T"
     elif value >= 1_000_000_000:
@@ -522,7 +520,6 @@ def build_daily_pick_prompt(market_data: dict) -> str:
     """Format market data jadi teks data murni — tanpa instruksi"""
     parts = []
 
-    # Global market
     g = market_data.get("global", {})
     if "error" not in g:
         parts.extend([
@@ -535,7 +532,6 @@ def build_daily_pick_prompt(market_data: dict) -> str:
             ""
         ])
 
-    # Fear & Greed
     fg = market_data.get("fear_greed", {})
     if "error" not in fg:
         fg_text = f"FEAR & GREED INDEX: {fg.get('value', '?')}/100 ({fg.get('classification', '?')})"
@@ -545,7 +541,6 @@ def build_daily_pick_prompt(market_data: dict) -> str:
             fg_text += f" | 7d ago: {fg['week_ago_value']} ({fg['week_ago_class']})"
         parts.extend([fg_text, ""])
 
-    # Top Gainers
     movers = market_data.get("movers", {})
     if "error" not in movers:
         gainers = movers.get("gainers", [])
@@ -580,7 +575,6 @@ def build_daily_pick_prompt(market_data: dict) -> str:
                 )
             parts.append("")
 
-    # Trending
     trending = market_data.get("trending", {})
     if "error" not in trending:
         coins = trending.get("trending", [])
@@ -596,7 +590,6 @@ def build_daily_pick_prompt(market_data: dict) -> str:
                 )
             parts.append("")
 
-    # DEX trending
     dex = market_data.get("dex", {})
     if "error" not in dex:
         dex_coins = dex.get("dex_trending", [])
@@ -658,7 +651,6 @@ def read_docx(file_path):
             if para.text.strip():
                 texts.append(para.text)
 
-        # Baca juga tabel kalau ada
         for table in doc.tables:
             for row in table.rows:
                 row_text = " | ".join(cell.text.strip() for cell in row.cells)
@@ -677,7 +669,7 @@ def read_csv_file(file_path):
         with open(file_path, "r", encoding="utf-8") as f:
             reader = csv.reader(f)
             for i, row in enumerate(reader):
-                if i >= 100:  # Batasi 100 baris biar tidak boros token
+                if i >= 100:
                     rows.append(f"... (total baris dipotong di 100)")
                     break
                 rows.append(" | ".join(row))
@@ -695,7 +687,6 @@ def read_json_file(file_path):
 
         text = json.dumps(data, indent=2, ensure_ascii=False)
 
-        # Batasi panjang
         if len(text) > 5000:
             text = text[:5000] + "\n... (dipotong, file terlalu panjang)"
 
@@ -717,7 +708,7 @@ def read_xlsx(file_path):
             texts.append(f"--- Sheet: {sheet_name} ---")
 
             for i, row in enumerate(ws.iter_rows(values_only=True)):
-                if i >= 100:  # Batasi 100 baris per sheet
+                if i >= 100:
                     texts.append("... (dipotong di 100 baris)")
                     break
                 row_text = " | ".join(str(cell) if cell is not None else "" for cell in row)
@@ -730,7 +721,6 @@ def read_xlsx(file_path):
         return f"[Error baca XLSX: {e}]"
 
 
-# Mapping ekstensi ke fungsi
 DOCUMENT_READERS = {
     ".txt": read_txt,
     ".pdf": read_pdf,
@@ -753,14 +743,12 @@ DOCUMENT_READERS = {
     ".sql": read_txt,
 }
 
-# Ekstensi yang didukung
 SUPPORTED_EXTENSIONS = list(DOCUMENT_READERS.keys())
 
 
 # ============================================
 # DOCUMENT CHUNKING
 # ============================================
-
 
 def split_text_into_chunks(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
     """Pecah teks panjang jadi chunks dengan overlap"""
@@ -773,26 +761,21 @@ def split_text_into_chunks(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
     while start < len(text):
         end = start + chunk_size
 
-        # Coba potong di akhir paragraf atau kalimat
         if end < len(text):
-            # Cari newline terdekat dari posisi end
             newline_pos = text.rfind("\n", start + chunk_size - 1000, end)
             if newline_pos > start:
                 end = newline_pos + 1
             else:
-                # Cari titik terdekat
                 dot_pos = text.rfind(". ", start + chunk_size - 1000, end)
                 if dot_pos > start:
                     end = dot_pos + 2
 
         chunks.append(text[start:end].strip())
 
-        # Mulai chunk berikutnya dengan overlap
         start = end - overlap
         if start < 0:
             start = 0
 
-        # Safety: kalau start tidak maju, paksa maju
         if start <= (end - chunk_size):
             start = end
 
@@ -865,22 +848,18 @@ def create_pdf_file(content, file_path):
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
 
-    # Title
     pdf.set_font("Helvetica", "B", 18)
     pdf.multi_cell(0, 10, safe_text_for_pdf(title), align="C")
     pdf.ln(3)
 
-    # Date
     pdf.set_font("Helvetica", "I", 9)
     pdf.cell(0, 6, f"Dibuat: {datetime.now().strftime('%d %B %Y, %H:%M')}", ln=True, align="C")
     pdf.ln(8)
 
-    # Separator line
     pdf.set_draw_color(200, 200, 200)
     pdf.line(10, pdf.get_y(), 200, pdf.get_y())
     pdf.ln(8)
 
-    # Body
     for line in body.split("\n"):
         stripped = line.strip()
         safe_line = safe_text_for_pdf(stripped)
@@ -923,18 +902,15 @@ def create_docx_file(content, file_path):
 
     doc = Document()
 
-    # Title
     title_para = doc.add_heading(title, level=0)
     title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    # Date
     date_para = doc.add_paragraph()
     date_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     run = date_para.add_run(f"Dibuat: {datetime.now().strftime('%d %B %Y, %H:%M')}")
     run.font.size = Pt(9)
     run.font.color.rgb = RGBColor(128, 128, 128)
 
-    # Body
     for line in body.split("\n"):
         stripped = line.strip()
 
@@ -955,117 +931,183 @@ def create_docx_file(content, file_path):
 
 
 # =============================================================
-# Bagian D — Web Search (DuckDuckGo)
+# Bagian D — Web Search (DuckDuckGo) — Smart Multi-Query
 # =============================================================
 
 
+def generate_query_variations(query: str) -> list[str]:
+    """
+    Generate beberapa variasi query dari input user.
+    Agar search lebih fleksibel tanpa user harus tebak kata kunci.
+    """
+    query_clean = query.strip()
+    query_lower = query_clean.lower()
+    variations = [query_clean]
+
+    # Mapping kata Indonesia umum ke English untuk topik global
+    id_to_en = {
+        "kondisi": "situation",
+        "situasi": "situation",
+        "berita": "news",
+        "terbaru": "latest",
+        "terkini": "latest",
+        "saat ini": "current",
+        "hari ini": "today",
+        "harga": "price",
+        "perang": "war",
+        "konflik": "conflict",
+        "gempa": "earthquake",
+        "banjir": "flood",
+        "pemilu": "election",
+        "presiden": "president",
+        "ekonomi": "economy",
+        "cuaca": "weather",
+        "jadwal": "schedule",
+        "hasil": "results",
+        "update": "update",
+        "perkembangan": "development",
+        "dampak": "impact",
+        "krisis": "crisis",
+        "serangan": "attack",
+        "militer": "military",
+        "kebijakan": "policy",
+        "pemerintah": "government",
+        "bencana": "disaster",
+        "korban": "casualties",
+        "negosiasi": "negotiation",
+        "sanksi": "sanctions",
+        "invasi": "invasion",
+        "rudal": "missile",
+        "nuklir": "nuclear",
+        "diplomatik": "diplomatic",
+    }
+
+    # Deteksi apakah query sudah mengandung kata waktu
+    time_words = ["saat ini", "hari ini", "terbaru", "terkini", "latest", "today", "current", "update", "now"]
+    has_time = any(tw in query_lower for tw in time_words)
+
+    # Variasi 1: tambah "terbaru" kalau belum ada kata waktu
+    if not has_time:
+        variations.append(f"{query_clean} terbaru")
+
+    # Variasi 2: tambah "berita terkini" kalau belum ada
+    if "berita" not in query_lower:
+        variations.append(f"berita terkini {query_clean}")
+
+    # Variasi 3: buat versi English untuk topik global
+    en_words = []
+    remaining = query_lower
+    for id_word, en_word in id_to_en.items():
+        if id_word in remaining:
+            en_words.append(en_word)
+            remaining = remaining.replace(id_word, "").strip()
+
+    # Sisa kata yang bukan kata umum Indonesia → kemungkinan nama proper (tetap pakai)
+    leftover = [w for w in remaining.split() if len(w) >= 3]
+
+    if en_words or leftover:
+        en_query_parts = leftover + en_words + ["latest news"]
+        en_query = " ".join(en_query_parts)
+        variations.append(en_query)
+
+    # Variasi 4: query asli + "latest news" (campuran)
+    variations.append(f"{query_clean} latest news")
+
+    # Hapus duplikat sambil jaga urutan
+    seen = set()
+    unique = []
+    for v in variations:
+        v_clean = v.strip()
+        if v_clean.lower() not in seen:
+            seen.add(v_clean.lower())
+            unique.append(v_clean)
+
+    return unique[:5]  # Max 5 variasi
 
 
 def web_search(query: str, max_results: int = 5) -> list[dict]:
     """
-    Search web via DuckDuckGo dengan fallback query.
-    Return list of {title, url, snippet}.
+    Search web via DuckDuckGo dengan multi-query otomatis.
+    Coba beberapa variasi query, gabungkan dan ranking hasilnya berdasarkan relevansi.
     """
-    def normalize(text: str) -> str:
-        return (text or "").lower().strip()
-
-    def score_result(result: dict, keywords: list[str]) -> int:
-        text = f"{result.get('title', '')} {result.get('body', '')}".lower()
-        score = 0
-        for kw in keywords:
-            if kw in text:
-                score += 1
-        return score
-
-    def run_search(search_query: str):
-        items = []
-        with DDGS() as ddgs:
-            for r in ddgs.text(search_query, region="wt-wt", max_results=max_results):
-                items.append(r)
-        return items
-
     try:
-        query_clean = query.strip()
-        query_lower = query_clean.lower()
+        variations = generate_query_variations(query)
+        print(f"[WebSearch] Query variations: {variations}")
 
-        fallback_queries = [query_clean]
-
-        # Kalau ada indikasi topik berita / real-time / geopolitik, tambahkan fallback english
-        realtime_keywords = [
-            "saat ini", "hari ini", "terbaru", "latest", "news", "update",
-            "konflik", "perang", "geopolitik", "kondisi", "situation"
-        ]
-        if any(k in query_lower for k in realtime_keywords):
-            fallback_queries.extend([
-                f"{query_clean} latest news",
-                f"{query_clean} update",
-            ])
-
-        # fallback khusus Selat Hormuz / topik global
-        if "selat hormuz" in query_lower or "hormuz" in query_lower:
-            fallback_queries.extend([
-                "Hormuz Strait latest news",
-                "Hormuz Strait current situation",
-                "Strait of Hormuz latest developments",
-            ])
+        # Kata kunci untuk scoring relevansi (minimal 3 huruf)
+        keywords = [w.lower() for w in query.strip().split() if len(w) >= 3]
 
         seen_urls = set()
-        collected = []
+        all_results = []
 
-        # kata kunci relevansi dasar
-        keywords = [w for w in query_lower.split() if len(w) >= 4]
-
-        for q in fallback_queries:
+        for i, q in enumerate(variations):
             try:
-                raw_results = run_search(q)
+                with DDGS() as ddgs:
+                    raw = list(ddgs.text(q, region="wt-wt", max_results=max_results))
 
-                for r in raw_results:
+                for r in raw:
                     url = r.get("href", "")
                     if not url or url in seen_urls:
                         continue
-
                     seen_urls.add(url)
 
-                    item = {
-                        "title": r.get("title", ""),
+                    title = r.get("title", "")
+                    snippet = r.get("body", "")
+                    combined_text = f"{title} {snippet}".lower()
+
+                    # Hitung skor relevansi
+                    score = 0
+                    for kw in keywords:
+                        if kw in combined_text:
+                            score += 2
+                    # Bonus kalau dari query pertama (paling original)
+                    if i == 0:
+                        score += 1
+
+                    all_results.append({
+                        "title": title,
                         "url": url,
-                        "snippet": r.get("body", ""),
-                    }
+                        "snippet": snippet,
+                        "_score": score,
+                        "_query": q,
+                    })
 
-                    relevance = score_result(r, keywords)
-                    item["_score"] = relevance
-                    collected.append(item)
+                print(f"[WebSearch] Query '{q}' -> {len(raw)} results")
 
-            except Exception as inner_e:
-                print(f"[WebSearch] Fallback query error ({q}): {inner_e}")
+            except Exception as e:
+                print(f"[WebSearch] Error on query '{q}': {e}")
                 continue
 
-        if not collected:
+        if not all_results:
+            print("[WebSearch] No results from any query variation")
             return []
 
-        # Urutkan berdasarkan relevansi
-        collected.sort(key=lambda x: x.get("_score", 0), reverse=True)
+        # Sort by relevance score (highest first)
+        all_results.sort(key=lambda x: x["_score"], reverse=True)
 
-        # Ambil hanya yang cukup relevan
-        filtered = [x for x in collected if x.get("_score", 0) > 0]
+        # Prefer results with score > 0, fallback to all
+        filtered = [x for x in all_results if x["_score"] > 0]
+        final_pool = filtered if filtered else all_results
 
-        final_results = filtered[:max_results] if filtered else collected[:max_results]
+        # Ambil top results
+        final = []
+        for r in final_pool[:max_results]:
+            final.append({
+                "title": r["title"],
+                "url": r["url"],
+                "snippet": r["snippet"],
+            })
 
-        # Hapus field internal
-        for item in final_results:
-            item.pop("_score", None)
-
-        return final_results
+        print(f"[WebSearch] Final results: {len(final)} (from {len(all_results)} total collected)")
+        return final
 
     except Exception as e:
-        print(f"[WebSearch] Error: {e}")
+        print(f"[WebSearch] Fatal error: {e}")
         return []
 
 
 def format_search_results(query: str, results: list[dict]) -> str:
-    """
-    Format search results jadi teks konteks untuk Gemini.
-    """
+    """Format search results jadi teks konteks untuk Gemini."""
     if not results:
         return f"Pencarian untuk '{query}' tidak menemukan hasil."
 

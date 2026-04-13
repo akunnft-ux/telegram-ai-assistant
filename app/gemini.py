@@ -41,7 +41,6 @@ Kalau ada info baru, tambahkan di AKHIR jawabanmu dengan format:
 key: value
 [/MEMORY]"""
 
-# === WEB SEARCH === Instruksi search untuk system prompt
 SEARCH_INSTRUCTION = """
 
 ## Kemampuan Web Search
@@ -53,9 +52,9 @@ Aturan penggunaan search:
 - Gunakan HANYA jika benar-benar perlu informasi terbaru/faktual yang kamu tidak yakin
 - Jangan gunakan untuk pertanyaan opini, salam, atau obrolan biasa
 - Jangan gunakan jika kamu sudah cukup yakin dengan jawabanmu
-- Tulis query pencarian yang spesifik dan efektif dalam bahasa yang sesuai topik
-- Jika user bertanya dalam bahasa Indonesia tentang topik lokal, search dalam bahasa Indonesia
-- Jika topik teknis/global, search dalam bahasa Inggris
+- Tulis query pencarian yang spesifik dan efektif
+- Untuk topik global/internasional, tulis query dalam bahasa Inggris agar hasil lebih akurat
+- Untuk topik lokal Indonesia, boleh pakai bahasa Indonesia
 - HANYA tulis tag [SEARCH], jangan tulis jawaban lain bersamaan tag itu
 - Setelah mendapat hasil pencarian, jawab berdasarkan informasi tersebut dengan menyertakan sumber
 """
@@ -163,7 +162,6 @@ def extract_full_text(response):
         return None
 
 
-# === WEB SEARCH === Fungsi extract search query dari response
 def extract_search_query(response_text: str):
     """
     Cek apakah response Gemini mengandung tag [SEARCH]...[/SEARCH].
@@ -178,7 +176,6 @@ def extract_search_query(response_text: str):
     return None
 
 
-# === WEB SEARCH === Update build_system_prompt dengan SEARCH_INSTRUCTION
 def build_system_prompt(user_id):
     """Build system prompt with memory context and search capability."""
     memory_context = format_memories_for_prompt(user_id)
@@ -305,7 +302,6 @@ async def get_response(user_id, user_message, recent_messages):
         return "Maaf, aku lagi ada gangguan. Coba lagi nanti ya."
 
 
-# === WEB SEARCH === Auto-detect search flow
 async def get_response_with_search(user_id, user_message, recent_messages):
     """
     Wrapper get_response yang handle auto web search.
@@ -314,7 +310,7 @@ async def get_response_with_search(user_id, user_message, recent_messages):
     1. Panggil get_response() biasa — 1 API call
     2. Cek apakah response mengandung [SEARCH]query[/SEARCH]
     3. Jika ya:
-       - Execute search lokal (0 API call)
+       - Execute search lokal dengan multi-query otomatis (0 API call)
        - Kirim hasil search + pertanyaan asli ke Gemini — 1 API call lagi
        - Return jawaban final
     4. Jika tidak: return response biasa
@@ -329,34 +325,34 @@ async def get_response_with_search(user_id, user_message, recent_messages):
     search_query = extract_search_query(response)
 
     if not search_query:
-        # Tidak perlu search, return langsung
         return response
 
-    # Gemini minta search — execute secara lokal
+    # Gemini minta search — execute secara lokal (multi-query otomatis)
     print(f"🔍 [WebSearch] Gemini requested search: '{search_query}'")
 
-    # DuckDuckGo search (synchronous, jalankan di thread)
     search_results = await asyncio.to_thread(web_search, search_query)
 
     if not search_results:
         search_context = (
             f"Pencarian web untuk '{search_query}' tidak menemukan hasil. "
-            f"Jawab pertanyaan user sebaik mungkin berdasarkan pengetahuanmu."
+            f"Jawab pertanyaan user sebaik mungkin berdasarkan pengetahuanmu. "
+            f"Jujur katakan kalau kamu tidak menemukan info terbaru."
         )
     else:
         search_context = format_search_results(search_query, search_results)
 
-    # Bangun prompt dengan konteks search
+    # Prompt cerdas dengan instruksi cek relevansi
     search_prompt = (
-        f"Berikut hasil pencarian web yang kamu minta:\n\n"
+        f"Kamu tadi meminta pencarian web. Berikut hasilnya:\n\n"
         f"{search_context}\n\n"
-        f"Berdasarkan hasil pencarian di atas, jawab pertanyaan user berikut:\n"
-        f"{user_message}\n\n"
-        f"Instruksi:\n"
-        f"- Jawab berdasarkan informasi dari hasil pencarian\n"
-        f"- Sebutkan sumber jika relevan\n"
-        f"- Tetap ringkas dan natural\n"
-        f"- Jawab dalam bahasa Indonesia kecuali user minta bahasa lain"
+        f"Pertanyaan user yang harus dijawab: {user_message}\n\n"
+        f"Tugasmu:\n"
+        f"- Cek dulu apakah hasil pencarian relevan dengan pertanyaan user\n"
+        f"- Jika relevan, jawab berdasarkan informasi dari hasil pencarian\n"
+        f"- Sertakan sumber jika relevan\n"
+        f"- Jika hasil tidak relevan, jawab dari pengetahuanmu dan jujur katakan "
+        f"bahwa hasil pencarian kurang membantu\n"
+        f"- Tetap ringkas dan natural dalam bahasa Indonesia"
     )
 
     # Call 2: kirim hasil search ke Gemini
@@ -368,7 +364,6 @@ async def get_response_with_search(user_id, user_message, recent_messages):
     if response_with_search:
         return response_with_search
     else:
-        # Fallback: return formatted search results langsung
         return (
             f"🔍 Hasil pencarian untuk: {search_query}\n\n"
             f"{search_context}\n\n"
@@ -376,7 +371,6 @@ async def get_response_with_search(user_id, user_message, recent_messages):
         )
 
 
-# === WEB SEARCH === Manual /search command
 async def search_and_respond(user_id, query, recent_messages):
     """
     Untuk command /search manual.
@@ -385,28 +379,28 @@ async def search_and_respond(user_id, query, recent_messages):
     """
     print(f"🔍 [WebSearch] Manual search: '{query}'")
 
-    # Search lokal
+    # Search lokal (multi-query otomatis)
     search_results = await asyncio.to_thread(web_search, query)
 
     if not search_results:
-        return f"🔍 Pencarian untuk '{query}' tidak menemukan hasil."
+        return f"🔍 Pencarian untuk '{query}' tidak menemukan hasil. Coba kata kunci yang berbeda."
 
     search_context = format_search_results(query, search_results)
 
-    # Bangun prompt
+    # Prompt cerdas dengan instruksi cek relevansi
     search_prompt = (
-    f"User meminta pencarian web untuk query: {query}\n\n"
-    f"Berikut hasil pencarian web:\n\n"
-    f"{search_context}\n\n"
-    f"Tugasmu:\n"
-    f"- Nilai dulu apakah hasil pencarian ini benar-benar relevan dengan query user\n"
-    f"- Jika relevan, rangkum dengan rapi dalam bahasa Indonesia\n"
-    f"- Jika sebagian tidak relevan, abaikan yang tidak relevan\n"
-    f"- Jika mayoritas hasil tidak relevan, katakan hasil pencarian kurang relevan dan sarankan query yang lebih tepat\n"
-    f"- Sertakan sumber/link yang relevan jika ada"
-)
+        f"User mencari informasi tentang: {query}\n\n"
+        f"Berikut hasil pencarian web:\n\n"
+        f"{search_context}\n\n"
+        f"Tugasmu:\n"
+        f"- Cek dulu apakah hasil pencarian relevan dengan yang user tanyakan\n"
+        f"- Jika relevan, rangkum dengan rapi dan natural dalam bahasa Indonesia\n"
+        f"- Sertakan poin-poin penting dan sumber yang relevan\n"
+        f"- Jika hasil pencarian tidak relevan atau tidak menjawab pertanyaan user, "
+        f"katakan bahwa hasil kurang relevan dan berikan jawaban sebaik mungkin dari pengetahuanmu\n"
+        f"- Jangan mengarang informasi yang tidak ada di hasil pencarian"
+    )
 
-    # 1 API call
     response = await get_response(user_id, search_prompt, recent_messages)
 
     if response:
