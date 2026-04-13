@@ -117,7 +117,7 @@ def extract_full_text(response):
                 text_parts.append(part.text)
                 print(f"📊 Part {i}: text ({len(part.text)} chars)")
 
-        if text_parts:
+               if text_parts:
             full_text = "\n".join(text_parts)
             total_text_len = len(full_text.strip())
             total_think_len = sum(len(t) for t in thinking_parts)
@@ -125,15 +125,17 @@ def extract_full_text(response):
             print(f"📊 Text parts total: {total_text_len} chars")
             print(f"📊 Thinking parts total: {total_think_len} chars")
 
-            if total_text_len > 100:
+            # Kalau ada text parts dengan isi, selalu pakai text parts
+            # Text parts = jawaban final model, thinking parts = proses berpikir internal
+            if total_text_len > 0:
                 print(f"📊 Using text parts: {total_text_len} chars")
                 return full_text
 
-            if thinking_parts and total_think_len > total_text_len:
-                print(f"📊 Text too short ({total_text_len}), using thinking parts ({total_think_len} chars)")
+            # Text parts kosong total, fallback ke thinking
+            if thinking_parts:
+                print(f"📊 Text empty, using thinking parts: {total_think_len} chars")
                 return "\n".join(thinking_parts)
 
-            print(f"📊 Using short text parts: {total_text_len} chars")
             return full_text
 
         if thinking_parts:
